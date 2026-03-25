@@ -1,4 +1,5 @@
 from . import env
+import os
 
 MAX_RETRIEVED_MEMORIES = 10
 
@@ -93,4 +94,5 @@ VIDEO_TARGET_HEIGHT = 720
 VIDEO_SCALE_ALGO = "bicubic"
 TOOL_MAX_REMOTE_CALLS = 20
 TERMINAL_TOOL_MAX_OUTPUT_CHARS = 12000
-DOCKER_COMPUTER_IMAGE = "ubuntu-custom:latest"
+DOCKER_COMPUTER_IMAGE = str(os.getenv("DOCKER_COMPUTER_IMAGE", "ubuntu-custom:latest") or "ubuntu-custom:latest").strip() or "ubuntu-custom:latest"
+DOCKER_COMPUTER_MEMORY_LIMIT = "256m"

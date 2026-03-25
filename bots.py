@@ -5,10 +5,13 @@ import sys
 import time
 import json
 
+from src.config import DOCKER_COMPUTER_IMAGE, DOCKER_COMPUTER_MEMORY_LIMIT
+
 _ENV_BOT_PATTERN = re.compile(r"^\.env\.([A-Za-z0-9_-]+)$")
 _START_STAGGER_SECONDS = 0.4
 _MONITOR_TICK_SECONDS = 1.0
-_DOCKER_IMAGE_DEFAULT = "ubuntu-custom:latest"
+_DOCKER_IMAGE_DEFAULT = DOCKER_COMPUTER_IMAGE
+_DOCKER_MEMORY_LIMIT_DEFAULT = DOCKER_COMPUTER_MEMORY_LIMIT
 
 
 def _parse_env_file(path: str) -> dict:
@@ -70,6 +73,7 @@ def _load_bot_specs(root_dir: str) -> list[dict]:
         storage = _resolve_storage_dir(env_map.get("STORAGE_DIR", ""), bot_id)
         bot_name = env_map.get("BOT_INSTANCE", "").strip() or env_map.get("BOT_NAME", "").strip() or bot_id
         docker_image = _DOCKER_IMAGE_DEFAULT
+        docker_memory_limit = _DOCKER_MEMORY_LIMIT_DEFAULT
 
         if not token:
             print(f"[!] Skip {env_file}: TELEGRAM_BOT_TOKEN is missing")
@@ -83,6 +87,7 @@ def _load_bot_specs(root_dir: str) -> list[dict]:
             "token": token,
             "storage_dir": storage,
             "docker_image": docker_image,
+            "docker_memory_limit": docker_memory_limit,
         })
 
     return specs
@@ -143,6 +148,7 @@ def _ensure_docker_container(spec: dict) -> bool:
     slug = _normalize_container_name(spec.get("id", "bot"), fallback="bot")
     container_name = f"computer-{slug}"
     docker_image = str(spec.get("docker_image") or _DOCKER_IMAGE_DEFAULT).strip() or _DOCKER_IMAGE_DEFAULT
+    docker_memory_limit = str(spec.get("docker_memory_limit") or _DOCKER_MEMORY_LIMIT_DEFAULT).strip() or _DOCKER_MEMORY_LIMIT_DEFAULT
     storage_dir = os.path.abspath(str(spec.get("storage_dir") or "").strip() or ".")
     host_workspace = os.path.join(storage_dir, "runtime", "terminal", "workspace")
     os.makedirs(host_workspace, exist_ok=True)
@@ -187,6 +193,7 @@ def _ensure_docker_container(spec: dict) -> bool:
             "docker", "run", "-d",
             "--name", container_name,
             "--restart", "unless-stopped",
+            "--memory", docker_memory_limit,
             "--mount", f"type=bind,source={host_workspace},target=/workspace",
             "-e", "TERM=xterm-256color",
             "-e", "COLUMNS=120",
@@ -215,6 +222,7 @@ def start_bot(spec: dict, root_dir: str):
     env["BOT_ID"] = spec["id"]
     env["STORAGE_DIR"] = str(spec["storage_dir"])
     env["DOCKER_COMPUTER_IMAGE"] = str(spec.get("docker_image") or _DOCKER_IMAGE_DEFAULT)
+    env["DOCKER_COMPUTER_MEMORY_LIMIT"] = str(spec.get("docker_memory_limit") or _DOCKER_MEMORY_LIMIT_DEFAULT)
     env["LAUNCHED_BY_BOTS_PY"] = "1"
 
     process = subprocess.Popen([sys.executable, "main.py"], env=env)

@@ -12,6 +12,7 @@ from src.config import (
     AVAILABLE_CHAT_MODELS,
     CHAT_MODEL,
     DOCKER_COMPUTER_IMAGE,
+    DOCKER_COMPUTER_MEMORY_LIMIT,
     GOOGLE_API_KEYS,
     HEALTH_DIR,
     HISTORY_VISUAL_FACTOR_MAX,
@@ -129,6 +130,7 @@ class ChatHandler:
             runtime_dir=RUNTIME_DIR,
             storage_dir=STORAGE_DIR,
             docker_image=DOCKER_COMPUTER_IMAGE,
+            memory_limit=DOCKER_COMPUTER_MEMORY_LIMIT,
         )
 
         self._perf_lock = threading.Lock()
@@ -685,5 +687,4 @@ class ChatHandler:
             "latency_ms_p95": p95,
             "last_error": last_error,
         }
-
 

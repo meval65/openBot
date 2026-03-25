@@ -8,22 +8,23 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from src.config import DOCKER_COMPUTER_IMAGE, DOCKER_COMPUTER_MEMORY_LIMIT
+
 
 class DockerTerminalService:
-    MEMORY_LIMIT = "4g"
-    DEFAULT_DOCKER_IMAGE = "ubuntu-custom:latest"
-
     def __init__(
         self,
         bot_id: str,
         runtime_dir: str,
         storage_dir: str,
-        docker_image: str = DEFAULT_DOCKER_IMAGE,
+        docker_image: str = DOCKER_COMPUTER_IMAGE,
+        memory_limit: str = DOCKER_COMPUTER_MEMORY_LIMIT,
     ):
         self.bot_id = str(bot_id or "bot").strip() or "bot"
         self.runtime_dir = os.path.abspath(str(runtime_dir or "").strip() or ".")
         self.storage_dir = os.path.abspath(str(storage_dir or "").strip() or ".")
-        self.docker_image = str(docker_image or self.DEFAULT_DOCKER_IMAGE).strip() or self.DEFAULT_DOCKER_IMAGE
+        self.docker_image = str(docker_image or DOCKER_COMPUTER_IMAGE).strip() or DOCKER_COMPUTER_IMAGE
+        self.memory_limit = str(memory_limit or DOCKER_COMPUTER_MEMORY_LIMIT).strip() or DOCKER_COMPUTER_MEMORY_LIMIT
 
         slug = self.normalize_container_name(self.bot_id, fallback="bot")
         self.container_name = f"computer-{slug}"
@@ -54,12 +55,14 @@ class DockerTerminalService:
         bot_id = str(bot.get("id") or bot.get("name") or "bot").strip() or "bot"
         runtime_dir = str(bot.get("runtime_dir") or "").strip()
         storage_dir = str(bot.get("storage_dir") or "").strip() or "."
-        docker_image = str(bot.get("docker_image") or cls.DEFAULT_DOCKER_IMAGE).strip() or cls.DEFAULT_DOCKER_IMAGE
+        docker_image = str(bot.get("docker_image") or DOCKER_COMPUTER_IMAGE).strip() or DOCKER_COMPUTER_IMAGE
+        memory_limit = str(bot.get("docker_memory_limit") or DOCKER_COMPUTER_MEMORY_LIMIT).strip() or DOCKER_COMPUTER_MEMORY_LIMIT
         return cls(
             bot_id=bot_id,
             runtime_dir=runtime_dir,
             storage_dir=storage_dir,
             docker_image=docker_image,
+            memory_limit=memory_limit,
         )
 
     def get_sandbox_status(self) -> tuple[bool, str]:
@@ -280,7 +283,7 @@ class DockerTerminalService:
                 subprocess.run(
                     [
                         "docker", "update",
-                        "--memory", self.MEMORY_LIMIT,
+                        "--memory", self.memory_limit,
                         self.container_name,
                     ],
                     capture_output=True, timeout=30,
@@ -293,7 +296,7 @@ class DockerTerminalService:
                 "docker", "run", "-d",
                 "--name", self.container_name,
                 "--restart", "unless-stopped",
-                "--memory", self.MEMORY_LIMIT,
+                "--memory", self.memory_limit,
                 "--mount", f"type=bind,source={self.workspace_dir},target={self.container_workspace}",
                 "-e", "TERM=xterm-256color",
                 "-e", "COLUMNS=120",
