@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import os
+import psutil
 import threading
 import time
 import tracemalloc
@@ -302,7 +303,6 @@ def _cleanup_stale_temp_files(max_age_seconds: int = 3600):
 
 
 def _cleanup_orphan_media_groups(db):
-    import os
     try:
         cursor = db.get_cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_groups'")
@@ -520,7 +520,6 @@ def _safe_process_metrics() -> dict:
     mem_mb = None
     peak_mb = None
     try:
-        import psutil  # optional
         p = psutil.Process(os.getpid())
         mem_mb = p.memory_info().rss / (1024 * 1024)
     except Exception:

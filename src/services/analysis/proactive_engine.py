@@ -10,6 +10,8 @@ import time
 from typing import Optional, TYPE_CHECKING, Tuple
 
 import requests
+from pymeteosource.api import Meteosource
+from pymeteosource.types import sections, tiers, units
 
 from src.config import BOT_DISPLAY_NAME, METEOSOURCE_API_KEY, PROACTIVE_ANALYSIS_MODEL
 from src.utils.api_utils import with_retry
@@ -110,8 +112,6 @@ def _get_weather_summary() -> str:
     try:
         if not METEOSOURCE_API_KEY:
             return "Data cuaca tidak tersedia."
-        from pymeteosource.api import Meteosource
-        from pymeteosource.types import sections, tiers, units
 
         meteosource = Meteosource(METEOSOURCE_API_KEY, tiers.FREE)
         forecast = meteosource.get_point_forecast(

@@ -1,3 +1,4 @@
+import atexit
 import json
 import os
 import logging
@@ -71,7 +72,6 @@ class SessionManager:
         self._save_debounce_seconds = 0.75
         self._save_timer: Optional[threading.Timer] = None
 
-        import atexit
         atexit.register(self.flush)
 
         os.makedirs(self.SESSION_DIR, exist_ok=True)

@@ -7,6 +7,8 @@ import json
 import hashlib
 from typing import Any, Dict, List, Union
 
+from tavily import TavilyClient
+
 from src.config import TAVILY_API_KEYS, HEALTH_DIR
 
 logger = logging.getLogger(__name__)
@@ -195,12 +197,6 @@ class TavilySearchService:
         except (TypeError, ValueError):
             safe_max_results = 5
         safe_max_results = max(1, min(safe_max_results, 10))
-
-        try:
-            from tavily import TavilyClient
-        except ModuleNotFoundError:
-            logger.error("[TAVILY] Python SDK belum terpasang. Install paket 'tavily-python'.")
-            return _tool_error("sdk_missing", "Web search tidak tersedia karena SDK Tavily belum terpasang di server.")
 
         max_attempts = max(3, len(self.api_keys) + 1)
         for attempt in range(max_attempts):

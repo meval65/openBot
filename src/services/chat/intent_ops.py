@@ -29,6 +29,7 @@ from src.services.chat.tool_policy import (
     WEB_IMAGE_MAX_BYTES,
     WEB_IMAGE_MAX_COUNT,
 )
+from src.utils.time_utils import parse_local_dt
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,6 @@ def _parse_schedule_datetime(raw_value: str) -> Optional[datetime.datetime]:
                 pass
 
     try:
-        from src.utils.time_utils import parse_local_dt
         parsed = parse_local_dt(text)
         if parsed is not None:
             return parsed

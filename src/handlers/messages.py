@@ -6,6 +6,7 @@ import contextlib
 import io
 from typing import Optional
 
+from PIL import Image
 from telegram import Update, Message, InputMediaPhoto, InputFile
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
@@ -528,8 +529,7 @@ async def handle_photo(update: Update, user_dir: str) -> Optional[str]:
             raise ValueError(f"Downloaded image too small ({file_size} bytes)")
 
         try:
-            import PIL.Image
-            with PIL.Image.open(img_path) as img:
+            with Image.open(img_path) as img:
                 img.verify()
         except Exception as e:
             raise ValueError(f"Invalid or corrupted image: {e}")
@@ -573,8 +573,7 @@ async def handle_sticker(update: Update, user_dir: str) -> Optional[str]:
 
         if ext == ".webp":
             try:
-                import PIL.Image
-                with PIL.Image.open(img_path) as img:
+                with Image.open(img_path) as img:
                     img.verify()
             except Exception as e:
                 raise ValueError(f"Invalid or corrupted sticker image: {e}")
@@ -625,5 +624,4 @@ async def handle_video(update: Update, user_dir: str) -> Optional[str]:
                 pass
         await update.message.reply_text("Gagal memproses video.")
         return None
-
 
