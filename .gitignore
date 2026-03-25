@@ -1,0 +1,59 @@
+storage/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+site/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.hypothesis/
+
+# IDE / OS junk
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Local databases, logs, runtime dumps
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+*.jsonl
+
+# Temporary / exported runtime files
+tmp/
+temp/
+*.tmp
+
+# Local utility script not needed in repo
+list_gemini_models.py
