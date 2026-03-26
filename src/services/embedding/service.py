@@ -23,7 +23,8 @@ from src.config import (
     EMBEDDING_MIN_TEXT_LEN,
     EMBEDDING_SOFT_TPM_LIMIT,
     EMBEDDING_SOFT_RPM_LIMIT,
-    CACHE_DIR,
+    EMBEDDING_CACHE_DIR,
+    EMBEDDING_CACHE_PATH,
 )
 from src.utils.api_error_policy import (
     classify_api_error,
@@ -52,7 +53,7 @@ class MemoryAnalyzer:
         self._cache_lock = threading.RLock()
         self._inflight_lock = threading.Lock()
         self._inflight_events: Dict[str, threading.Event] = {}
-        self._disk_cache_path = os.path.join(CACHE_DIR, "embedding_cache.json")
+        self._disk_cache_path = EMBEDDING_CACHE_PATH
         self._last_disk_flush = 0.0
         self._soft_tpm_limit = max(1000, int(EMBEDDING_SOFT_TPM_LIMIT))
         self._soft_rpm_limit = max(1, int(EMBEDDING_SOFT_RPM_LIMIT))
@@ -106,7 +107,7 @@ class MemoryAnalyzer:
 
     def _load_disk_cache(self):
         try:
-            os.makedirs(CACHE_DIR, exist_ok=True)
+            os.makedirs(EMBEDDING_CACHE_DIR, exist_ok=True)
             if not os.path.exists(self._disk_cache_path):
                 return
             if os.path.getsize(self._disk_cache_path) == 0:
@@ -154,7 +155,7 @@ class MemoryAnalyzer:
         if not force and (now_ts - self._last_disk_flush) < 5.0:
             return
         try:
-            os.makedirs(CACHE_DIR, exist_ok=True)
+            os.makedirs(EMBEDDING_CACHE_DIR, exist_ok=True)
             with self._cache_lock:
                 payload = {
                     k: {"ts": ts, "vec": vec}

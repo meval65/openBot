@@ -24,7 +24,6 @@ from src.config import (
     MAX_TG_LEN,
     TEMP_DIR,
     IMAGE_STORE_DIR,
-    STICKER_VIDEO_STORE_DIR,
     VIDEO_STORE_DIR,
     VIDEO_MAX_DURATION_SECONDS,
     BOT_DISPLAY_NAME,
@@ -342,12 +341,11 @@ def _cleanup_temp_media_paths(img_path: Optional[str], video_sticker_path: Optio
             os.remove(video_sticker_path)
         except OSError:
             pass
-    if video_path and os.path.exists(video_path):
-        if VIDEO_STORE_DIR not in video_path and STICKER_VIDEO_STORE_DIR not in video_path:
-            try:
-                os.remove(video_path)
-            except OSError:
-                pass
+    if video_path and os.path.exists(video_path) and VIDEO_STORE_DIR not in video_path:
+        try:
+            os.remove(video_path)
+        except OSError:
+            pass
 
 
 async def handle_photo(update: Update, user_dir: str) -> Optional[str]:

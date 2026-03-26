@@ -220,7 +220,6 @@ class TavilySearchService:
                     search_kwargs["time_range"] = normalized_range
                 if include_images:
                     search_kwargs["include_images"] = True
-                    search_kwargs["include_image_descriptions"] = True
                 result = client.search(**search_kwargs)
 
                 lines: List[str] = []
@@ -242,18 +241,9 @@ class TavilySearchService:
                 if include_images and isinstance(result, dict):
                     for img in (result.get("images", []) or [])[:8]:
                         if isinstance(img, str):
-                            image_items.append({"url": img, "description": ""})
+                            image_items.append({"url": img})
                         elif isinstance(img, dict):
-                            image_items.append(
-                                {
-                                    "url": str(img.get("url") or img.get("image_url") or "").strip(),
-                                    "description": str(
-                                        img.get("description")
-                                        or img.get("image_description")
-                                        or ""
-                                    ).strip(),
-                                }
-                            )
+                            image_items.append({"url": str(img.get("url") or img.get("image_url") or "").strip()})
 
                 with self._lock:
                     self._failures[current_idx] = 0

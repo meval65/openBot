@@ -203,7 +203,6 @@ def build_python_tools(self) -> list:
             "mime_type": mime_type,
             "source_url": "",
             "path": local_copy,
-            "description": "",
             "filename": os.path.basename(local_copy),
             "size": len(image_bytes),
         }
@@ -289,63 +288,53 @@ def build_python_tools(self) -> list:
         image_candidates = payload.get("images") if isinstance(payload.get("images"), list) else []
 
         downloaded_images = []
-        fallback_desc_for_ai = []
         if include_img and image_candidates:
             for img in image_candidates[:8]:
                 if len(downloaded_images) >= WEB_IMAGE_MAX_COUNT:
-                    desc_text = str(img.get("description") or "").strip() if isinstance(img, dict) else ""
-                    if desc_text:
-                        fallback_desc_for_ai.append(desc_text)
                     continue
                 if not isinstance(img, dict):
                     continue
                 source_url = str(img.get("url") or "").strip()
                 cached_item = resolve_web_image(self, source_url)
                 if cached_item:
+                    staged_ai = self.terminal_service.stage_local_file_to_workspace(
+                        str(cached_item.get("path") or "").strip(),
+                        media_kind="image",
+                    )
                     downloaded_images.append(
                         {
                             "data": cached_item.get("data"),
                             "mime_type": str(cached_item.get("mime_type") or "image/jpeg"),
                             "source_url": source_url,
-                            "path": str(cached_item.get("path") or "").strip(),
-                            "description": str(cached_item.get("description") or img.get("description") or "").strip(),
+                            "path": str((staged_ai or {}).get("host_path") or cached_item.get("path") or "").strip(),
+                            "ai_workspace_path": str((staged_ai or {}).get("container_path") or "").strip(),
                         }
                     )
                     continue
                 downloaded = _download_web_image(source_url)
                 if not downloaded:
-                    # Failover: keep trying next candidate URL until image quota is filled.
-                    desc_text = str(img.get("description") or "").strip()
-                    if desc_text:
-                        fallback_desc_for_ai.append(desc_text)
                     continue
                 persisted = ingest_web_image_to_cache(
                     self,
                     source_url=source_url,
                     raw_data=downloaded.get("data", b""),
                     mime_type=str(downloaded.get("mime_type") or "image/jpeg"),
-                    image_description=str(img.get("description") or "").strip(),
+                    image_description="",
                 )
                 if persisted:
+                    staged_ai = self.terminal_service.stage_local_file_to_workspace(
+                        str(persisted.get("path") or "").strip(),
+                        media_kind="image",
+                    )
                     downloaded_images.append(
                         {
                             "data": persisted.get("data"),
                             "mime_type": str(persisted.get("mime_type") or "image/jpeg"),
                             "source_url": source_url,
-                            "path": str(persisted.get("path") or "").strip(),
-                            "description": str(persisted.get("description") or "").strip(),
+                            "path": str((staged_ai or {}).get("host_path") or persisted.get("path") or "").strip(),
+                            "ai_workspace_path": str((staged_ai or {}).get("container_path") or "").strip(),
                         }
                     )
-
-        if include_img and (not downloaded_images) and fallback_desc_for_ai:
-            staged_desc = getattr(self._tool_call_local, "web_image_desc_inputs", None)
-            if not isinstance(staged_desc, list):
-                staged_desc = []
-            for desc in fallback_desc_for_ai[:WEB_IMAGE_MAX_COUNT]:
-                clean = " ".join(str(desc or "").split()).strip()
-                if clean:
-                    staged_desc.append(clean)
-            self._tool_call_local.web_image_desc_inputs = staged_desc[:WEB_IMAGE_MAX_COUNT]
 
         if downloaded_images:
             # 1) Stage image bytes for multimodal follow-up in generation loop.
@@ -759,7 +748,7 @@ def build_python_tools(self) -> list:
                         "mime_type": item.get("mime_type"),
                         "source_url": "",
                         "path": item.get("path"),
-                        "description": "",
+                        "ai_workspace_path": "",
                     }
                 )
                 loaded.append(item)

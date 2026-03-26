@@ -4,11 +4,11 @@ import threading
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from src.config import MEDIA_DIR
+from src.config import MEDIA_CATALOG_PATH
 
 _LOCK = threading.RLock()
 _STATE: Optional[Dict] = None
-_STORE_PATH = os.path.join(MEDIA_DIR, "_catalog.json")
+_STORE_PATH = MEDIA_CATALOG_PATH
 
 
 def _now_iso() -> str:
@@ -29,7 +29,7 @@ def _ensure_loaded():
     global _STATE
     if _STATE is not None:
         return
-    os.makedirs(MEDIA_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(_STORE_PATH), exist_ok=True)
     if not os.path.exists(_STORE_PATH):
         _STATE = _default_state()
         return

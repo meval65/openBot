@@ -152,33 +152,31 @@ class SessionManager:
             self._save_session_to_disk(force=True)
             return extracted
 
-    def attach_latest_model_image_paths(self, image_paths: List[str]) -> bool:
+    def attach_latest_model_image_paths(self, image_paths: List[Any]) -> bool:
         with self.get_lock():
             if not self._is_loaded:
                 self._load_session()
 
-            clean_paths: List[str] = []
-            for p in image_paths or []:
-                path = str(p or "").strip()
-                if path and os.path.exists(path):
-                    clean_paths.append(path)
-            if not clean_paths:
-                return False
-
-            for msg in reversed(self.session_data):
-                if not isinstance(msg, dict) or msg.get("role") != "model":
+            clean_refs: List[Dict[str, str]] = []
+            for item in image_paths or []:
+                if isinstance(item, dict):
+                    kind = str(item.get("kind") or "image").strip().lower()
+                    host_path = str(item.get("host_path") or "").strip()
+                    ai_workspace_path = str(item.get("ai_workspace_path") or "").strip()
+                    role = str(item.get("role") or "model").strip().lower() or "model"
+                    if kind in {"image", "video"} and (host_path or ai_workspace_path):
+                        clean_refs.append(
+                            {
+                                "kind": kind,
+                                "host_path": host_path,
+                                "ai_workspace_path": ai_workspace_path,
+                                "role": role,
+                            }
+                        )
                     continue
-                media_refs = self._normalize_media_refs(msg)
-                existing_hosts = {
-                    str(ref.get("host_path") or "").strip()
-                    for ref in media_refs
-                    if isinstance(ref, dict) and str(ref.get("kind") or "").strip().lower() == "image"
-                }
-                changed = False
-                for path in clean_paths[:5]:
-                    if path in existing_hosts:
-                        continue
-                    media_refs.append(
+                path = str(item or "").strip()
+                if path and os.path.exists(path):
+                    clean_refs.append(
                         {
                             "kind": "image",
                             "host_path": path,
@@ -186,7 +184,33 @@ class SessionManager:
                             "role": "model",
                         }
                     )
-                    existing_hosts.add(path)
+            if not clean_refs:
+                return False
+
+            for msg in reversed(self.session_data):
+                if not isinstance(msg, dict) or msg.get("role") != "model":
+                    continue
+                media_refs = self._normalize_media_refs(msg)
+                existing_keys = {
+                    (
+                        str(ref.get("kind") or "").strip().lower(),
+                        str(ref.get("host_path") or "").strip(),
+                        str(ref.get("ai_workspace_path") or "").strip(),
+                    )
+                    for ref in media_refs
+                    if isinstance(ref, dict)
+                }
+                changed = False
+                for ref in clean_refs[:5]:
+                    dedupe_key = (
+                        str(ref.get("kind") or "").strip().lower(),
+                        str(ref.get("host_path") or "").strip(),
+                        str(ref.get("ai_workspace_path") or "").strip(),
+                    )
+                    if dedupe_key in existing_keys:
+                        continue
+                    media_refs.append(ref)
+                    existing_keys.add(dedupe_key)
                     changed = True
                 if changed:
                     msg["media_refs"] = media_refs
@@ -322,9 +346,11 @@ class SessionManager:
             media_refs = self._normalize_media_refs(msg)
             for ref in media_refs:
                 if str(ref.get("kind") or "").strip().lower() == "image":
-                    total_tokens += 24 if str(ref.get("ai_workspace_path") or "").strip() else 258
+                    role = str(ref.get("role") or msg.get("role") or "").strip().lower()
+                    total_tokens += 258 if role == "user" else 24
                 elif str(ref.get("kind") or "").strip().lower() == "video":
-                    total_tokens += 24 if str(ref.get("ai_workspace_path") or "").strip() else 512
+                    role = str(ref.get("role") or msg.get("role") or "").strip().lower()
+                    total_tokens += 512 if role == "user" else 24
             for p in parts:
                 if not isinstance(p, str):
                     continue

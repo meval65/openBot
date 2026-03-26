@@ -51,6 +51,17 @@ def _visual_units_for_image_path(path: str) -> float:
     if is_sticker_path(path):
         return max(0.1, float(VISUAL_UNIT_WEIGHT_STICKER))
     return max(0.1, float(VISUAL_UNIT_WEIGHT_IMAGE))
+
+
+def _normalize_sticker_video_payload_mime(video_ctx: Dict, fallback_mime: str = "video/webm") -> str:
+    mime_type = str((video_ctx or {}).get("analysis_mime") or "").strip().lower()
+    if mime_type:
+        return mime_type
+    if bool((video_ctx or {}).get("used_collage")):
+        return "image/jpeg"
+    return str(fallback_mime or "video/webm").strip().lower() or "video/webm"
+
+
 def _generate_video_sticker_response(
     self,
     user_text: str,
@@ -130,10 +141,8 @@ def process_video_sticker_message(
 
         video_ctx = build_video_sticker_payload(self.cache_db, video_file_path)
         video_data = video_ctx["analysis_data"]
-        mime_type = video_ctx["analysis_mime"]
+        mime_type = _normalize_sticker_video_payload_mime(video_ctx)
         video_hash = video_ctx["hash"]
-        if not mime_type.startswith("video/"):
-            mime_type = "video/webm"
         collage_frame_count = int(video_ctx.get("frame_count", 0) or 0)
         response_media_data = video_data
         response_media_mime = mime_type
@@ -311,6 +320,7 @@ def build_gemini_history(self, history) -> List[types.Content]:
             kind = str(ref.get("kind") or "").strip().lower()
             host_path = str(ref.get("host_path") or "").strip()
             ai_path = str(ref.get("ai_workspace_path") or "").strip()
+            media_role = str(ref.get("role") or role or "").strip().lower() or "user"
             if kind == "image":
                 if not host_path or is_sticker_path(host_path) or host_path in seen_history_images:
                     continue
@@ -326,7 +336,7 @@ def build_gemini_history(self, history) -> List[types.Content]:
                     announced_ai_image_paths.add(ai_path)
                 elif not ai_path:
                     content_parts.append(types.Part(text=f"[IMG_PATH] {host_path}"))
-                if (
+                if media_role == "user" and (
                     host_path in recent_image_paths
                     and used_visual_tokens < visual_budget_tokens
                     and os.path.exists(host_path)
@@ -366,7 +376,7 @@ def build_gemini_history(self, history) -> List[types.Content]:
                     announced_ai_video_paths.add(ai_path)
                 elif not ai_path:
                     content_parts.append(types.Part(text=f"[VID_PATH] {host_path}"))
-                if (
+                if media_role == "user" and (
                     host_path in recent_video_paths
                     and used_visual_tokens < visual_budget_tokens
                     and os.path.exists(host_path)

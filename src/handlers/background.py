@@ -190,6 +190,10 @@ async def background_schedule_checker(context: ContextTypes.DEFAULT_TYPE):
     claim_note = ""
     claimed_ids = []
     try:
+        runtime_ok, runtime_reason = await asyncio.to_thread(chat_handler.ensure_runtime_ready)
+        if not runtime_ok:
+            logger.warning("[SCHEDULE] Skipped because runtime is paused: %s", runtime_reason)
+            return
         # Claim due schedules first to avoid double-trigger with interaction flow.
         claim = await asyncio.to_thread(
             scheduler.claim_pending_schedules,
@@ -308,6 +312,10 @@ async def background_proactive_engine(context: ContextTypes.DEFAULT_TYPE):
     scheduler = services['scheduler']
 
     try:
+        runtime_ok, runtime_reason = await asyncio.to_thread(chat_handler.ensure_runtime_ready)
+        if not runtime_ok:
+            logger.warning("[PROACTIVE-ENGINE] Skipped because runtime is paused: %s", runtime_reason)
+            return
         if _in_proactive_cooldown(chat_handler):
             return
 

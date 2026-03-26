@@ -171,6 +171,10 @@ class ChatHandler:
         self._terminal_warmup_done = threading.Event()
         self._terminal_warmup_ok = False
         self._terminal_warmup_reason = ""
+        self._runtime_pause_lock = threading.Lock()
+        self._runtime_paused = False
+        self._runtime_pause_reason = ""
+        self._terminal_monitor_started = False
 
         self._initialize_client()
         self._tools = self._build_python_tools()
@@ -184,6 +188,7 @@ class ChatHandler:
             )
         ):
             self._warmup_terminal_sandbox_async()
+            self._start_terminal_health_monitor_async()
 
     @property
     def _tavily(self) -> TavilySearchService:
@@ -258,6 +263,9 @@ class ChatHandler:
         user_text: str = "",
         user_profile_context: Optional[str] = None,
     ) -> str:
+        runtime_ok, runtime_reason = self.ensure_runtime_ready()
+        if not runtime_ok:
+            return runtime_reason
         return media_ops.process_video_sticker_message(
             self,
             video_file_path=video_file_path,
@@ -497,6 +505,14 @@ class ChatHandler:
         req_t0 = time.perf_counter()
         success = False
         err_text = ""
+        runtime_ok, runtime_reason = self.ensure_runtime_ready()
+        if not runtime_ok:
+            self._record_request_perf(
+                latency_ms=(time.perf_counter() - req_t0) * 1000.0,
+                success=False,
+                error_text=runtime_reason,
+            )
+            return runtime_reason
         if not self._acquire_processing_lock():
             self._record_request_perf(
                 latency_ms=(time.perf_counter() - req_t0) * 1000.0,
@@ -563,7 +579,7 @@ class ChatHandler:
                     "mime_type": mime,
                     "source_url": str(item.get("source_url") or "").strip(),
                     "path": str(item.get("path") or "").strip(),
-                    "description": str(item.get("description") or "").strip(),
+                    "ai_workspace_path": str(item.get("ai_workspace_path") or "").strip(),
                 }
             )
         if not clean_items:
@@ -662,6 +678,7 @@ class ChatHandler:
                 ok, reason = self.terminal_service.get_sandbox_status()
                 self._terminal_warmup_ok = bool(ok)
                 self._terminal_warmup_reason = str(reason or "")
+                self._set_runtime_pause(not ok, self._terminal_warmup_reason)
                 if ok:
                     _always_visible_notice(
                         f"[TERMINAL] Warmup success. container={self.terminal_service.container_name}"
@@ -674,6 +691,7 @@ class ChatHandler:
             except Exception as e:
                 self._terminal_warmup_ok = False
                 self._terminal_warmup_reason = str(e)
+                self._set_runtime_pause(True, self._terminal_warmup_reason)
                 _always_visible_notice(f"[TERMINAL] Warmup exception: {e}", level=logging.WARNING)
             finally:
                 self._terminal_warmup_done.set()
@@ -688,6 +706,63 @@ class ChatHandler:
         if self._terminal_warmup_ok:
             return True, ""
         return False, str(self._terminal_warmup_reason or "terminal_warmup_failed")
+
+    def _set_runtime_pause(self, paused: bool, reason: str = ""):
+        clean_reason = str(reason or "").strip()
+        with self._runtime_pause_lock:
+            changed = (self._runtime_paused != bool(paused)) or (self._runtime_pause_reason != clean_reason)
+            self._runtime_paused = bool(paused)
+            self._runtime_pause_reason = clean_reason
+        if not changed:
+            return
+        if paused:
+            _always_visible_notice(
+                f"[RUNTIME] Bot paused because Docker/computer AI is unavailable: {clean_reason or 'unknown'}",
+                level=logging.CRITICAL,
+            )
+        else:
+            _always_visible_notice("[RUNTIME] Bot resumed. Docker/computer AI is healthy again.")
+
+    def ensure_runtime_ready(self) -> tuple[bool, str]:
+        if any(
+            (
+                TOOLS_ENABLE_AI_PERSONAL_COMPUTER,
+                TOOLS_ENABLE_AI_PC_INSPECT_IMAGES,
+                TOOLS_ENABLE_AI_PC_SEND_FILES,
+            )
+        ):
+            ok, reason = self.wait_for_terminal_warmup(0.1)
+            if not ok:
+                msg = "Bot sedang pause karena Docker/computer AI tidak aktif."
+                if reason:
+                    msg = f"{msg} Detail: {reason}"
+                return False, msg
+        with self._runtime_pause_lock:
+            paused = bool(self._runtime_paused)
+            reason = str(self._runtime_pause_reason or "").strip()
+        if paused:
+            msg = "Bot sedang pause karena Docker/computer AI tidak aktif."
+            if reason:
+                msg = f"{msg} Detail: {reason}"
+            return False, msg
+        return True, ""
+
+    def _start_terminal_health_monitor_async(self):
+        with self._terminal_warmup_lock:
+            if self._terminal_monitor_started:
+                return
+            self._terminal_monitor_started = True
+
+        def _run():
+            while True:
+                try:
+                    ok, reason = self.terminal_service.get_sandbox_status()
+                    self._set_runtime_pause(not ok, str(reason or ""))
+                except Exception as e:
+                    self._set_runtime_pause(True, str(e))
+                time.sleep(5.0)
+
+        threading.Thread(target=_run, name="terminal-health-monitor", daemon=True).start()
 
     def _acquire_processing_lock(self) -> bool:
         with self._flag_lock:

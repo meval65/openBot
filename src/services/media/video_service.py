@@ -14,7 +14,6 @@ from PIL import Image, ImageDraw
 from src.config import (
     ANIMATED_COLLAGE_CACHE_DIR,
     HISTORY_VISUAL_PART_TOKEN_BASE,
-    STICKER_VIDEO_STORE_DIR,
     VIDEO_MAX_DURATION_SECONDS,
     VIDEO_VISUAL_BASE_TOKENS,
     VIDEO_VISUAL_TOKENS_PER_SECOND,
@@ -26,8 +25,6 @@ from . import catalog
 
 logger = logging.getLogger(__name__)
 
-os.makedirs(VIDEO_STORE_DIR, exist_ok=True)
-os.makedirs(STICKER_VIDEO_STORE_DIR, exist_ok=True)
 os.makedirs(ANIMATED_COLLAGE_CACHE_DIR, exist_ok=True)
 
 
@@ -119,11 +116,9 @@ def _output_path_for_cache_key(cache_key: str, ext: str = ".mp4", target_dir: st
 def _is_sticker_video_source(path: str) -> bool:
     norm = str(path or "").replace("\\", "/").lower()
     base = os.path.basename(norm)
-    sticker_dir = str(STICKER_VIDEO_STORE_DIR).replace("\\", "/").lower()
     return (
         base.startswith("sticker_")
         or "/stickers/" in norm
-        or (sticker_dir and sticker_dir in norm)
     )
 
 
@@ -317,102 +312,6 @@ def _upsert_video_cache(db, cache_key: str, optimized_path: str, mime_type: str)
         logger.warning(f"[VIDEO-CACHE] DB upsert failed: {e}")
 
 
-def prepare_video_for_chat(db, src_path: str) -> str:
-    _, _, original_hash = read_video_bytes(src_path)
-    cache_key = _cache_lookup_key(original_hash)
-    cached = _lookup_cached_video(db, cache_key)
-    if cached:
-        return cached
-
-    source_ext = _normalized_source_ext(src_path)
-    is_sticker_video = _is_sticker_video_source(src_path)
-    target_dir = STICKER_VIDEO_STORE_DIR if is_sticker_video else VIDEO_STORE_DIR
-    os.makedirs(target_dir, exist_ok=True)
-    optimized_out_path = _output_path_for_cache_key(cache_key, ".mp4", target_dir=target_dir)
-    fallback_out_path = _output_path_for_cache_key(cache_key, source_ext, target_dir=target_dir)
-
-    # Keep sticker video in original format (typically .webm) for fidelity.
-    if is_sticker_video:
-        logger.info("[VIDEO] Sticker video kept ephemeral (not persisted to storage).")
-        return src_path
-
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        if not os.path.exists(fallback_out_path):
-            shutil.copyfile(src_path, fallback_out_path)
-        _upsert_video_cache(db, cache_key, fallback_out_path, _mime_for_video_path(fallback_out_path))
-        return fallback_out_path
-
-    scale_algo = _safe_scale_algo()
-    target_h = max(120, int(VIDEO_TARGET_HEIGHT))
-    vf = f"scale=-2:{target_h}:flags={scale_algo}"
-    cmd = [
-        ffmpeg,
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        src_path,
-        "-t",
-        str(max(1, VIDEO_MAX_DURATION_SECONDS)),
-        "-vf",
-        vf,
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "28",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        optimized_out_path,
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if (
-            proc.returncode != 0
-            or not os.path.exists(optimized_out_path)
-            or os.path.getsize(optimized_out_path) < 256
-        ):
-            logger.warning("[VIDEO] ffmpeg optimize failed, fallback to source copy.")
-            if os.path.exists(optimized_out_path):
-                try:
-                    os.remove(optimized_out_path)
-                except OSError:
-                    pass
-            if not os.path.exists(fallback_out_path):
-                shutil.copyfile(src_path, fallback_out_path)
-    except Exception as e:
-        logger.warning(f"[VIDEO] ffmpeg optimize exception, fallback to source copy: {e}")
-        if os.path.exists(optimized_out_path):
-            try:
-                os.remove(optimized_out_path)
-            except OSError:
-                pass
-        if not os.path.exists(fallback_out_path):
-            shutil.copyfile(src_path, fallback_out_path)
-
-    final_path = optimized_out_path if os.path.exists(optimized_out_path) else fallback_out_path
-    final_mime = _mime_for_video_path(final_path)
-    meta = _ffprobe_json(final_path)
-    if meta:
-        try:
-            duration = float((meta.get("format") or {}).get("duration") or 0.0)
-            logger.info(
-                "[VIDEO] Optimized hash=%s duration=%.2fs path=%s",
-                original_hash[:12],
-                duration,
-                final_path,
-            )
-        except Exception:
-            pass
-
-    _upsert_video_cache(db, cache_key, final_path, final_mime)
-    return final_path
 def generate_video_description(chat_handler, video_path: str, user_caption: str, extra_context: str = "") -> str:
     _, _, video_hash = read_video_bytes(video_path)
     cached_desc = catalog.get_video_description(video_hash)

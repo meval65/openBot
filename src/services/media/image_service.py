@@ -18,16 +18,11 @@ from src.config import (
     ANIMATED_COLLAGE_CACHE_DIR,
     IMAGE_STORE_DIR,
     MAX_IMAGE_PIXELS,
-    STICKER_STORE_DIR,
-    STICKER_STATIC_STORE_DIR,
 )
 from . import catalog
 
 logger = logging.getLogger(__name__)
 
-os.makedirs(IMAGE_STORE_DIR, exist_ok=True)
-os.makedirs(STICKER_STORE_DIR, exist_ok=True)
-os.makedirs(STICKER_STATIC_STORE_DIR, exist_ok=True)
 os.makedirs(ANIMATED_COLLAGE_CACHE_DIR, exist_ok=True)
 TARGET_MEGAPIXELS = 0.85
 TILE_SIZE = 1024
@@ -249,46 +244,6 @@ def get_image_analysis_payload(image_path: str) -> tuple[bytes, str, bool, int]:
         return data, mime_type, True, frame_count
     data, mime_type, _ = read_image_bytes(image_path)
     return data, mime_type, False, 0
-
-
-def store_image_permanently(src_path: str) -> str:
-    try:
-        data, mime_type, sha256_hex = read_image_bytes(src_path)
-        ext = os.path.splitext(src_path)[1].lower() or ".jpg"
-        base_name = os.path.basename(src_path).lower()
-        is_sticker = (
-            base_name.startswith("sticker_")
-            or base_name.startswith("sticker_thumb_")
-            or base_name.startswith("stickerthumb_")
-        )
-        if is_sticker:
-            logger.info(f"[IMG-STORE] Sticker kept ephemeral (not persisted to storage): {src_path}")
-            return src_path
-        target_dir = STICKER_STATIC_STORE_DIR if is_sticker else IMAGE_STORE_DIR
-        os.makedirs(target_dir, exist_ok=True)
-        dest_path = os.path.join(target_dir, f"{sha256_hex}{ext}")
-
-        if os.path.exists(dest_path):
-            try:
-                os.remove(src_path)
-            except OSError:
-                pass
-            logger.info(f"[IMG-STORE] Duplicate detected, reusing: {dest_path}")
-            return dest_path
-
-        with open(dest_path, "wb") as f:
-            f.write(data)
-
-        try:
-            os.remove(src_path)
-        except OSError:
-            pass
-
-        logger.info(f"[IMG-STORE] Stored permanently: {dest_path}")
-        return dest_path
-    except Exception as e:
-        logger.error(f"[IMG-STORE] Failed: {e}")
-        return src_path
 
 
 def _upsert_web_image_source(source_url: str, media_hash: str, description: str = ""):

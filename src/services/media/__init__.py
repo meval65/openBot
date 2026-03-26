@@ -1,10 +1,8 @@
 from .image_service import (
     read_image_bytes,
     resize_image_if_needed,
-    store_image_permanently,
 )
 from .video_service import (
-    prepare_video_for_chat,
     read_video_bytes,
 )
 from .pipeline import (
@@ -21,8 +19,6 @@ from .pipeline import (
 __all__ = [
     "read_image_bytes",
     "resize_image_if_needed",
-    "store_image_permanently",
-    "prepare_video_for_chat",
     "read_video_bytes",
     "ingest_local_image",
     "ingest_local_video",

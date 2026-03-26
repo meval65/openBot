@@ -59,7 +59,7 @@ async def send_outbound_media_with_caption(
     remain = safe_text[TELEGRAM_CAPTION_LIMIT:].strip() if safe_text else ""
 
     prepared = []
-    image_paths = []
+    sent_media_refs = []
     for idx, item in enumerate(media_items[:5]):
         if not isinstance(item, dict):
             continue
@@ -70,10 +70,13 @@ async def send_outbound_media_with_caption(
         ext = ".png" if "png" in mime else ".jpg"
         bio = io.BytesIO(bytes(data))
         bio.name = f"{file_prefix}_{idx + 1}{ext}"
-        prepared.append(bio)
-        path = str(item.get("path") or "").strip()
-        if path:
-            image_paths.append(path)
+        prepared.append(
+            {
+                "bio": bio,
+                "path": str(item.get("path") or "").strip(),
+                "ai_workspace_path": str(item.get("ai_workspace_path") or "").strip(),
+            }
+        )
 
     if not prepared:
         if safe_text:
@@ -83,36 +86,49 @@ async def send_outbound_media_with_caption(
     if len(prepared) == 1:
         try:
             await send_photo(
-                photo=prepared[0],
+                photo=prepared[0]["bio"],
                 caption=caption or None,
                 parse_mode=ParseMode.HTML if caption else None,
             )
         except TelegramError:
             await send_photo(
-                photo=prepared[0],
+                photo=prepared[0]["bio"],
                 caption=caption or None,
             )
     else:
         media = [
             InputMediaPhoto(
-                media=bio,
+                media=item["bio"],
                 caption=caption if idx == 0 and caption else None,
                 parse_mode=ParseMode.HTML if idx == 0 and caption else None,
             )
-            for idx, bio in enumerate(prepared)
+            for idx, item in enumerate(prepared)
         ]
         try:
             await send_media_group(media=media)
         except TelegramError:
             plain_media = [
-                InputMediaPhoto(media=bio, caption=caption if idx == 0 and caption else None)
-                for idx, bio in enumerate(prepared)
+                InputMediaPhoto(media=item["bio"], caption=caption if idx == 0 and caption else None)
+                for idx, item in enumerate(prepared)
             ]
             await send_media_group(media=plain_media)
 
+    for item in prepared:
+        host_path = str(item.get("path") or "").strip()
+        ai_workspace_path = str(item.get("ai_workspace_path") or "").strip()
+        if host_path or ai_workspace_path:
+            sent_media_refs.append(
+                {
+                    "kind": "image",
+                    "host_path": host_path,
+                    "ai_workspace_path": ai_workspace_path,
+                    "role": "model",
+                }
+            )
+
     if remain:
         await send_text(remain)
-    return True, image_paths
+    return True, sent_media_refs
 
 
 async def send_outbound_files_with_caption(

@@ -193,20 +193,6 @@ def _consume_staged_inspect_image_parts(self) -> List[types.Part]:
     return parts
 
 
-def _consume_staged_tool_image_desc_parts(self) -> List[types.Part]:
-    staged = getattr(self._tool_call_local, "web_image_desc_inputs", None)
-    self._tool_call_local.web_image_desc_inputs = []
-    if not isinstance(staged, list) or not staged:
-        return []
-    parts: List[types.Part] = []
-    for desc in staged[:3]:
-        clean = " ".join(str(desc or "").split()).strip()
-        if not clean:
-            continue
-        parts.append(types.Part(text=f"[Web image description fallback] {clean}"))
-    return parts
-
-
 def initialize_client(self):
     try:
         with self._client_state_lock:
@@ -397,7 +383,6 @@ def generate_with_tools(
     self._tool_call_local.called_tools = set()
     self._tool_call_local.inspect_image_inputs = []
     self._tool_call_local.web_image_inputs = []
-    self._tool_call_local.web_image_desc_inputs = []
     self._tool_call_local.last_terminal_cwd = ""
     gen_t0 = time.perf_counter()
     tools_enabled = True
@@ -484,13 +469,6 @@ def generate_with_tools(
                         if staged_image_parts:
                             pending_parts.extend(staged_image_parts)
                             logger.info("[TOOL-CALL] Added %d staged web image part(s) to model input.", len(staged_image_parts))
-                        staged_desc_parts = _consume_staged_tool_image_desc_parts(self)
-                        if staged_desc_parts:
-                            pending_parts.extend(staged_desc_parts)
-                            logger.info(
-                                "[TOOL-CALL] Added %d staged web image description fallback part(s) to model input.",
-                                len(staged_desc_parts),
-                            )
                         logger.info(
                             "[TOOL-CALL] Executed %d tool call(s), parallel=%s",
                             len(tool_results),
@@ -617,7 +595,6 @@ def generate_with_tools(
         self._tool_call_local.called_tools = None
         self._tool_call_local.inspect_image_inputs = None
         self._tool_call_local.web_image_inputs = None
-        self._tool_call_local.web_image_desc_inputs = None
         self._tool_call_local.last_terminal_cwd = None
 
     logger.error("Semua percobaan tools gagal, lanjut ke mode tanpa tools")

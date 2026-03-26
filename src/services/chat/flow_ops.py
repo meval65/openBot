@@ -13,13 +13,12 @@ from src.config import (
     VISUAL_UNIT_WEIGHT_IMAGE,
     VISUAL_UNIT_WEIGHT_STICKER,
 )
+from src.utils.error_types import LLMGenerationError
 from src.services.media.pipeline import (
     ingest_local_image,
     ingest_local_video,
     is_sticker_path,
 )
-from src.services.media.image_service import store_image_permanently
-from src.services.media.video_service import prepare_video_for_chat
 from src.services.chat.tool_prompt import build_tool_usage_directive
 from src.services.chat.workspace_context import build_workspace_snapshot
 from src.services.chat.media_parts import part_from_bytes_with_resolution
@@ -179,13 +178,9 @@ def execute_flow(
     staged_image = _stage_media_for_ai_workspace(self, history_image_path, "image") if history_image_path else {}
     staged_video = _stage_media_for_ai_workspace(self, history_video_path, "video") if history_video_path else {}
     if history_image_path and not staged_image:
-        persisted_image_path = str(store_image_permanently(history_image_path) or "").strip()
-        if persisted_image_path and os.path.isfile(persisted_image_path):
-            history_image_path = persisted_image_path
+        raise LLMGenerationError("AI workspace image staging failed.")
     if history_video_path and not staged_video:
-        persisted_video_path = str(prepare_video_for_chat(self.cache_db, history_video_path) or "").strip()
-        if persisted_video_path and os.path.isfile(persisted_video_path):
-            history_video_path = persisted_video_path
+        raise LLMGenerationError("AI workspace video staging failed.")
     history_image_path, workspace_image_path = _canonical_media_paths(history_image_path, staged_image)
     history_video_path, workspace_video_path = _canonical_media_paths(history_video_path, staged_video)
 
@@ -285,19 +280,6 @@ def retrieve_memories(self, query_text: str) -> List[Dict]:
         if not normalized_query:
             return []
 
-        def _fallback_text_memories(reason: str) -> List[Dict]:
-            fallback = self.memory_manager.search_memories_by_text(
-                normalized_query,
-                max_results=6,
-                embedding_namespaces=["memory"],
-            )
-            logger.info(
-                "[MEMORY-RETRIEVAL] Fallback text search used (%s). found=%d",
-                reason,
-                len(fallback),
-            )
-            return fallback
-
         query_embedding = None
         if normalized_query == str(getattr(self, "_last_query_text", "") or ""):
             query_embedding = getattr(self, "_last_query_embedding", None)
@@ -310,13 +292,13 @@ def retrieve_memories(self, query_text: str) -> List[Dict]:
         t1 = time.perf_counter()
         if query_embedding is None:
             logger.info("[LATENCY] memory_retrieval skipped: embedding_none in %.1fms", (t1 - t0) * 1000.0)
-            return _fallback_text_memories("embedding_none")
+            return []
         if isinstance(query_embedding, np.ndarray) and query_embedding.size == 0:
             logger.info("[LATENCY] memory_retrieval skipped: embedding_empty_np in %.1fms", (t1 - t0) * 1000.0)
-            return _fallback_text_memories("embedding_empty_np")
+            return []
         if isinstance(query_embedding, (list, tuple)) and len(query_embedding) == 0:
             logger.info("[LATENCY] memory_retrieval skipped: embedding_empty_list in %.1fms", (t1 - t0) * 1000.0)
-            return _fallback_text_memories("embedding_empty_list")
+            return []
 
         self._last_query_text = normalized_query
         self._last_query_embedding = query_embedding
