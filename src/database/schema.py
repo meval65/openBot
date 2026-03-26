@@ -8,7 +8,7 @@ def create_tables(conn: sqlite3.Connection, lock):
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS memories (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 summary TEXT NOT NULL,
                 content_text TEXT,
                 group_id TEXT,

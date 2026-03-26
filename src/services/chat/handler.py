@@ -86,6 +86,7 @@ class ChatHandler:
         self.current_key_index = 0
         self.health_monitor = get_shared_api_key_monitor(self.api_keys, monitor_id="gemini")
         self.client: Optional[genai.Client] = None
+        self._client_state_lock = threading.Lock()
 
         self.primary_chat_model = CHAT_MODEL
         ordered_models = [self.primary_chat_model]
@@ -288,6 +289,9 @@ class ChatHandler:
     def _initialize_client(self):
         return generation_ops.initialize_client(self)
 
+    def _get_client_snapshot(self) -> tuple[int, genai.Client]:
+        return generation_ops.get_client_snapshot(self)
+
     def _rotate_api_key(self) -> bool:
         return generation_ops.rotate_api_key(self)
 
@@ -398,6 +402,8 @@ class ChatHandler:
         response_text: str,
         image_path: Optional[str],
         video_path: Optional[str] = None,
+        ai_workspace_image_path: Optional[str] = None,
+        ai_workspace_video_path: Optional[str] = None,
     ):
         return flow_ops.post_process_response(
             self,
@@ -405,6 +411,8 @@ class ChatHandler:
             response_text=response_text,
             image_path=image_path,
             video_path=video_path,
+            ai_workspace_image_path=ai_workspace_image_path,
+            ai_workspace_video_path=ai_workspace_video_path,
         )
 
 

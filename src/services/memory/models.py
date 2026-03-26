@@ -5,7 +5,7 @@ import numpy as np
 
 @dataclass(slots=True)
 class MemoryItem:
-    id: str
+    id: int
     summary: str
     priority: float
     embedding: Optional[np.ndarray]

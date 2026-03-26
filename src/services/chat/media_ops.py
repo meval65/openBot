@@ -35,6 +35,18 @@ from src.services.chat import flow_ops
 
 logger = logging.getLogger(__name__)
 
+
+def _iter_media_refs(msg: Dict) -> List[Dict]:
+    refs = []
+    if not isinstance(msg, dict):
+        return refs
+    raw_refs = msg.get("media_refs", [])
+    if isinstance(raw_refs, list):
+        for item in raw_refs:
+            if isinstance(item, dict):
+                refs.append(item)
+    return refs
+
 def _visual_units_for_image_path(path: str) -> float:
     if is_sticker_path(path):
         return max(0.1, float(VISUAL_UNIT_WEIGHT_STICKER))
@@ -189,9 +201,12 @@ def extract_history_image_paths(history) -> set:
     paths = set()
     try:
         for msg in history or []:
-            for part in msg.get("parts", []):
-                if isinstance(part, str) and part.startswith(":::IMG_PATH:::"):
-                    paths.add(part.replace(":::IMG_PATH:::", "", 1).strip())
+            for ref in _iter_media_refs(msg):
+                if str(ref.get("kind") or "").strip().lower() != "image":
+                    continue
+                host_path = str(ref.get("host_path") or "").strip()
+                if host_path:
+                    paths.add(host_path)
     except Exception:
         return set()
     return paths
@@ -202,9 +217,12 @@ def extract_recent_history_image_paths(history, window: int = HISTORY_RECENT_MED
     try:
         recent = list(history or [])[-max(1, int(window)):]
         for msg in recent:
-            for part in msg.get("parts", []):
-                if isinstance(part, str) and part.startswith(":::IMG_PATH:::"):
-                    paths.add(part.replace(":::IMG_PATH:::", "", 1).strip())
+            for ref in _iter_media_refs(msg):
+                if str(ref.get("kind") or "").strip().lower() != "image":
+                    continue
+                host_path = str(ref.get("host_path") or "").strip()
+                if host_path:
+                    paths.add(host_path)
     except Exception:
         return set()
     return paths
@@ -215,9 +233,12 @@ def extract_recent_history_video_paths(history, window: int = HISTORY_RECENT_MED
     try:
         recent = list(history or [])[-max(1, int(window)):]
         for msg in recent:
-            for part in msg.get("parts", []):
-                if isinstance(part, str) and part.startswith(":::VID_PATH:::"):
-                    paths.add(part.replace(":::VID_PATH:::", "", 1).strip())
+            for ref in _iter_media_refs(msg):
+                if str(ref.get("kind") or "").strip().lower() != "video":
+                    continue
+                host_path = str(ref.get("host_path") or "").strip()
+                if host_path:
+                    paths.add(host_path)
     except Exception:
         return set()
     return paths
@@ -265,72 +286,99 @@ def build_gemini_history(self, history) -> List[types.Content]:
     for msg in history:
         role = msg.get("role", "user")
         parts = msg.get("parts", [])
+        if not isinstance(parts, list):
+            parts = []
         time_tag = self._get_compact_msg_time_tag(msg)
         time_tag_used = False
+        refs = _iter_media_refs(msg)
+        msg_ai_image_paths = [
+            str(ref.get("ai_workspace_path") or "").strip()
+            for ref in refs
+            if str(ref.get("kind") or "").strip().lower() == "image" and str(ref.get("ai_workspace_path") or "").strip()
+        ]
+        msg_ai_video_paths = [
+            str(ref.get("ai_workspace_path") or "").strip()
+            for ref in refs
+            if str(ref.get("kind") or "").strip().lower() == "video" and str(ref.get("ai_workspace_path") or "").strip()
+        ]
+        announced_ai_image_paths: set = set()
+        announced_ai_video_paths: set = set()
 
         content_parts: List[types.Part] = []
-        for p in parts:
-            if not isinstance(p, str):
+        for ref in refs:
+            if not isinstance(ref, dict):
                 continue
-            if p.startswith(":::IMG_PATH:::"):
-                img_path = p.replace(":::IMG_PATH:::", "", 1)
-                if is_sticker_path(img_path):
-                    seen_history_images.add(img_path)
+            kind = str(ref.get("kind") or "").strip().lower()
+            host_path = str(ref.get("host_path") or "").strip()
+            ai_path = str(ref.get("ai_workspace_path") or "").strip()
+            if kind == "image":
+                if not host_path or is_sticker_path(host_path) or host_path in seen_history_images:
                     continue
-                if img_path in seen_history_images:
-                    continue
-                content_parts.append(types.Part(text=f"[IMG_PATH] {img_path}"))
-                if (
-                    img_path in recent_image_paths
-                    and
-                    used_visual_tokens < visual_budget_tokens
-                    and os.path.exists(img_path)
-                ):
-                    # Keep history images reasonably detailed for better OCR/detail retention.
-                    data, mime_type = _read_history_image_bytes(img_path, max_side=history_img_max_side)
-                    unit_weight = _visual_units_for_image_path(img_path)
-                    est_tokens = max(258, int(est_per_part * unit_weight))
-                    if (used_visual_tokens + est_tokens) > visual_budget_tokens:
-                        seen_history_images.add(img_path)
-                        continue
-                    try:
-                        level = STICKER_MEDIA_RESOLUTION if is_sticker_path(img_path) else INPUT_IMAGE_MEDIA_RESOLUTION
-                        content_parts.append(
-                            part_from_bytes_with_resolution(
-                                data=data,
-                                mime_type=mime_type,
-                                level=level,
-                                model_name=self.chat_model_name,
+                if ai_path and ai_path not in announced_ai_image_paths:
+                    content_parts.append(
+                        types.Part(
+                            text=(
+                                f"[AI_WORKSPACE_IMAGE] {ai_path}\n"
+                                "File gambar ini tersedia di komputer pribadi AI dan bisa diakses langsung via terminal/tool."
                             )
                         )
-                        used_visual_tokens += est_tokens
-                        used_visual_units += float(unit_weight)
-                        used_visual_parts += 1
-                    except Exception as e:
-                        logger.warning(f"[IMG-HISTORY] Failed to load recent image {img_path}: {e}")
-                seen_history_images.add(img_path)
-            elif p.startswith(":::VID_PATH:::"):
-                vid_path = p.replace(":::VID_PATH:::", "", 1).strip()
-                if is_sticker_path(vid_path):
-                    seen_history_videos.add(vid_path)
-                    continue
-                if vid_path in seen_history_videos:
-                    continue
-                content_parts.append(types.Part(text=f"[VID_PATH] {vid_path}"))
+                    )
+                    announced_ai_image_paths.add(ai_path)
+                elif not ai_path:
+                    content_parts.append(types.Part(text=f"[IMG_PATH] {host_path}"))
                 if (
-                    vid_path in recent_video_paths
-                    and
-                    used_visual_tokens < visual_budget_tokens
-                    and os.path.exists(vid_path)
+                    host_path in recent_image_paths
+                    and used_visual_tokens < visual_budget_tokens
+                    and os.path.exists(host_path)
+                ):
+                    data, mime_type = _read_history_image_bytes(host_path, max_side=history_img_max_side)
+                    unit_weight = _visual_units_for_image_path(host_path)
+                    est_tokens = max(258, int(est_per_part * unit_weight))
+                    if (used_visual_tokens + est_tokens) <= visual_budget_tokens:
+                        try:
+                            level = STICKER_MEDIA_RESOLUTION if is_sticker_path(host_path) else INPUT_IMAGE_MEDIA_RESOLUTION
+                            content_parts.append(
+                                part_from_bytes_with_resolution(
+                                    data=data,
+                                    mime_type=mime_type,
+                                    level=level,
+                                    model_name=self.chat_model_name,
+                                )
+                            )
+                            used_visual_tokens += est_tokens
+                            used_visual_units += float(unit_weight)
+                            used_visual_parts += 1
+                        except Exception as e:
+                            logger.warning(f"[IMG-HISTORY] Failed to load recent image {host_path}: {e}")
+                seen_history_images.add(host_path)
+            elif kind == "video":
+                if not host_path or is_sticker_path(host_path) or host_path in seen_history_videos:
+                    continue
+                if ai_path and ai_path not in announced_ai_video_paths:
+                    content_parts.append(
+                        types.Part(
+                            text=(
+                                f"[AI_WORKSPACE_VIDEO] {ai_path}\n"
+                                "File video ini tersedia di komputer pribadi AI dan bisa diakses langsung via terminal/tool."
+                            )
+                        )
+                    )
+                    announced_ai_video_paths.add(ai_path)
+                elif not ai_path:
+                    content_parts.append(types.Part(text=f"[VID_PATH] {host_path}"))
+                if (
+                    host_path in recent_video_paths
+                    and used_visual_tokens < visual_budget_tokens
+                    and os.path.exists(host_path)
                 ):
                     try:
-                        video_analysis = load_video_analysis(vid_path)
+                        video_analysis = load_video_analysis(host_path)
                         vdata = video_analysis["analysis_data"]
                         vmime = video_analysis["analysis_mime"]
-                        unit_weight = max(0.1, float(video_analysis.get("visual_units") or estimate_video_visual_units(vid_path)))
+                        unit_weight = max(0.1, float(video_analysis.get("visual_units") or estimate_video_visual_units(host_path)))
                         est_tokens = max(258, int(est_per_part * unit_weight))
                         if (used_visual_tokens + est_tokens) <= visual_budget_tokens:
-                            level = STICKER_MEDIA_RESOLUTION if is_sticker_path(vid_path) else INPUT_IMAGE_MEDIA_RESOLUTION
+                            level = STICKER_MEDIA_RESOLUTION if is_sticker_path(host_path) else INPUT_IMAGE_MEDIA_RESOLUTION
                             content_parts.append(
                                 part_from_bytes_with_resolution(
                                     data=vdata,
@@ -343,13 +391,15 @@ def build_gemini_history(self, history) -> List[types.Content]:
                             used_visual_units += float(unit_weight)
                             used_visual_parts += 1
                     except Exception as e:
-                        logger.warning(f"[VID-HISTORY] Failed to load recent video {vid_path}: {e}")
-                seen_history_videos.add(vid_path)
-            else:
-                if time_tag and not time_tag_used:
-                    p = f"{time_tag} {p}"
-                    time_tag_used = True
-                content_parts.append(types.Part(text=p))
+                        logger.warning(f"[VID-HISTORY] Failed to load recent video {host_path}: {e}")
+                seen_history_videos.add(host_path)
+        for p in parts:
+            if not isinstance(p, str):
+                continue
+            if time_tag and not time_tag_used:
+                p = f"{time_tag} {p}"
+                time_tag_used = True
+            content_parts.append(types.Part(text=p))
 
         if time_tag and not time_tag_used:
             content_parts.insert(0, types.Part(text=time_tag))

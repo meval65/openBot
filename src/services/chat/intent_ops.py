@@ -508,6 +508,8 @@ def build_python_tools(self) -> list:
             mem_id = str(memory_id or "").strip()
             if not mem_id:
                 return "Gagal menghapus memori: `memory_id` wajib diisi. Gunakan `list_memories` dulu untuk melihat id yang tersedia."
+            if not mem_id.isdigit() or int(mem_id) <= 0:
+                return "Gagal menghapus memori: `memory_id` harus berupa angka positif."
             ok = self.memory_manager.archive_memory_by_id(mem_id)
             if ok:
                 return f"Memori id={mem_id} berhasil diarsipkan."
@@ -525,6 +527,8 @@ def build_python_tools(self) -> list:
             clean_summary = " ".join(str(summary or "").split()).strip()
             if not mem_id:
                 return "Gagal update memori: memory_id wajib diisi."
+            if not mem_id.isdigit() or int(mem_id) <= 0:
+                return "Gagal update memori: memory_id harus berupa angka positif."
             if len(clean_summary) < 3:
                 return "Gagal update memori: summary terlalu pendek."
 

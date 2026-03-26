@@ -157,17 +157,27 @@ def count_history_tokens_native(self, history_deque) -> int:
             continue
         role = "user" if msg.get("role") == "user" else "model"
         parts = msg.get("parts", [])
+        media_refs = msg.get("media_refs", [])
         tokens_text = []
         time_tag = self._get_compact_msg_time_tag(msg)
         if time_tag:
             tokens_text.append(time_tag)
+        has_structured_media_refs = isinstance(media_refs, list) and any(isinstance(ref, dict) for ref in media_refs)
+        if isinstance(media_refs, list):
+            for ref in media_refs:
+                if not isinstance(ref, dict):
+                    continue
+                kind = str(ref.get("kind") or "").strip().lower()
+                ai_path = str(ref.get("ai_workspace_path") or "").strip()
+                if kind == "image":
+                    tokens_text.append("[ai-workspace-image]" if ai_path else "[image]")
+                elif kind == "video":
+                    tokens_text.append("[ai-workspace-video]" if ai_path else "[video]")
         for p in parts:
             if not isinstance(p, str):
                 continue
-            if p.startswith(":::IMG_PATH:::"):
-                tokens_text.append("[image]")
-            elif p.startswith(":::VID_PATH:::"):
-                tokens_text.append("[video]")
+            if not has_structured_media_refs:
+                tokens_text.append(p)
             else:
                 tokens_text.append(p)
         if not tokens_text:
@@ -181,7 +191,8 @@ def count_history_tokens_native(self, history_deque) -> int:
     for attempt in range(max_attempts):
         active_model = self._select_chat_model_for_attempt()
         try:
-            resp = self.client.models.count_tokens(
+            _, request_client = self._get_client_snapshot()
+            resp = request_client.models.count_tokens(
                 model=active_model,
                 contents=contents,
             )

@@ -8,12 +8,10 @@ from src.services.media.image_service import (
     read_image_bytes,
     resize_image_if_needed,
     resolve_cached_web_image,
-    store_image_permanently,
 )
 from src.services.media.video_service import (
     estimate_video_visual_units,
     get_video_collage_payload,
-    prepare_video_for_chat,
     read_video_bytes,
 )
 
@@ -32,18 +30,17 @@ def is_sticker_path(path: str) -> bool:
 def ingest_local_image(path: str) -> Dict:
     resize_image_if_needed(path)
     analysis_data, analysis_mime, used_collage, frame_count = get_image_analysis_payload(path)
-    stored_path = store_image_permanently(path)
-    _, _, media_hash = read_image_bytes(stored_path)
+    _, _, media_hash = read_image_bytes(path)
     return {
         "kind": "image",
-        "stored_path": stored_path,
+        "stored_path": path,
         "hash": media_hash,
         "analysis_data": analysis_data,
         "analysis_mime": analysis_mime,
         "used_collage": bool(used_collage),
         "frame_count": int(frame_count or 0),
-        "is_sticker": is_sticker_path(stored_path),
-        "media_resolution": STICKER_MEDIA_RESOLUTION if is_sticker_path(stored_path) else INPUT_IMAGE_MEDIA_RESOLUTION,
+        "is_sticker": is_sticker_path(path),
+        "media_resolution": STICKER_MEDIA_RESOLUTION if is_sticker_path(path) else INPUT_IMAGE_MEDIA_RESOLUTION,
     }
 
 
@@ -60,17 +57,16 @@ def load_image_analysis(path: str) -> Dict:
 
 
 def ingest_local_video(db, path: str) -> Dict:
-    stored_path = prepare_video_for_chat(db, path)
-    media_data, media_mime, media_hash = read_video_bytes(stored_path)
+    media_data, media_mime, media_hash = read_video_bytes(path)
     return {
         "kind": "video",
-        "stored_path": stored_path,
+        "stored_path": path,
         "hash": media_hash,
         "analysis_data": media_data,
         "analysis_mime": media_mime,
-        "is_sticker": is_sticker_path(stored_path),
-        "media_resolution": STICKER_MEDIA_RESOLUTION if is_sticker_path(stored_path) else INPUT_IMAGE_MEDIA_RESOLUTION,
-        "visual_units": float(estimate_video_visual_units(stored_path)),
+        "is_sticker": is_sticker_path(path),
+        "media_resolution": STICKER_MEDIA_RESOLUTION if is_sticker_path(path) else INPUT_IMAGE_MEDIA_RESOLUTION,
+        "visual_units": float(estimate_video_visual_units(path)),
     }
 
 

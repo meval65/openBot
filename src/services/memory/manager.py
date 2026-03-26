@@ -1,4 +1,3 @@
-import uuid
 import logging
 import numpy as np
 import threading
@@ -111,15 +110,14 @@ class MemoryManager:
                 logger.info("[MEMORY-ADD] Duplicate detected, skipping")
                 return "duplicate"
         
-        mem_id = str(uuid.uuid4())
         cursor = self.db.get_cursor()
         
         try:
             cursor.execute("""
-                INSERT INTO memories (id, summary, memory_type, embedding_namespace, priority, 
+                INSERT INTO memories (summary, memory_type, embedding_namespace, priority, 
                                     last_used_at, use_count, status, embedding, created_at, group_id)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?)
-            """, (mem_id, summary, m_type, embedding_namespace, priority, datetime.now(), embedding_blob, datetime.now(), group_id))
+                VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?, ?)
+            """, (summary, m_type, embedding_namespace, priority, datetime.now(), embedding_blob, datetime.now(), group_id))
             self.db.commit()
             self._invalidate_cache()
             logger.info(f"[MEMORY-ADD] Added memory (group={group_id}): {summary[:50]}")
@@ -131,7 +129,7 @@ class MemoryManager:
 
     def update_memory(
         self,
-        memory_id: str,
+        memory_id: int | str,
         new_summary: str,
         new_priority: Optional[float] = None,
         new_m_type: Optional[str] = None,
@@ -150,7 +148,7 @@ class MemoryManager:
             try:
                 resolved_id = self._resolve_active_memory_id(raw_id)
                 if not resolved_id:
-                    logger.warning(f"[MEMORY-UPDATE] Target id not found/ambiguous: {raw_id}")
+                    logger.warning(f"[MEMORY-UPDATE] Target id not found/invalid: {raw_id}")
                     return False
 
                 fields = ["summary=?", "last_used_at=?"]
@@ -442,7 +440,7 @@ class MemoryManager:
 
         return results
 
-    def _mark_used(self, memory_ids: List[str]):
+    def _mark_used(self, memory_ids: List[int]):
         """Batched update of memory usage stats"""
         if not memory_ids:
             return
@@ -492,9 +490,9 @@ class MemoryManager:
                 self.db.rollback()
                 return 0
 
-    def archive_memory_by_id(self, memory_id: str) -> bool:
+    def archive_memory_by_id(self, memory_id: int | str) -> bool:
         """
-        Archive (soft-delete) a single active memory by its UUID string.
+        Archive (soft-delete) a single active memory by its numeric ID.
         Returns True if a row was actually updated, False otherwise.
         Encapsulates all DB access — callers never need to know the schema.
         """
@@ -505,7 +503,7 @@ class MemoryManager:
             try:
                 resolved_id = self._resolve_active_memory_id(raw_id)
                 if not resolved_id:
-                    logger.warning(f"[MEMORY-ARCHIVE] ID not found/ambiguous: {raw_id}")
+                    logger.warning(f"[MEMORY-ARCHIVE] ID not found/invalid: {raw_id}")
                     return False
                 cursor = self.db.get_cursor()
                 cursor.execute(
@@ -517,39 +515,32 @@ class MemoryManager:
                 if changed:
                     self.db.commit()
                     self._invalidate_cache()
-                    logger.info(f"[MEMORY-ARCHIVE] Archived by ID: {resolved_id[:8]}...")
+                    logger.info(f"[MEMORY-ARCHIVE] Archived by ID: {resolved_id}")
                 else:
-                    logger.warning(f"[MEMORY-ARCHIVE] ID {resolved_id[:8]}... not found or already archived")
+                    logger.warning(f"[MEMORY-ARCHIVE] ID {resolved_id} not found or already archived")
                 return changed
             except Exception as e:
                 logger.error(f"[MEMORY-ARCHIVE] Failed: {e}")
                 return False
 
-    def _resolve_active_memory_id(self, memory_id: str) -> Optional[str]:
+    def _resolve_active_memory_id(self, memory_id: int | str) -> Optional[int]:
         token = str(memory_id or "").strip()
         if not token:
             return None
-        token = token.replace("...", "").strip()
+        if not token.isdigit():
+            return None
+        target_id = int(token)
+        if target_id <= 0:
+            return None
         cursor = self.db.get_cursor()
         try:
             cursor.execute(
                 "SELECT id FROM memories WHERE id=? AND status='active' LIMIT 1",
-                (token,),
+                (target_id,),
             )
             row = cursor.fetchone()
             if row:
                 return row[0] if isinstance(row, (list, tuple)) else row["id"]
-
-            # Accept short prefix IDs shown in UI/chat (e.g. 54667409...).
-            if len(token) >= 6:
-                cursor.execute(
-                    "SELECT id FROM memories WHERE id LIKE ? AND status='active' LIMIT 2",
-                    (f"{token}%",),
-                )
-                rows = cursor.fetchall()
-                if len(rows) == 1:
-                    only = rows[0]
-                    return only[0] if isinstance(only, (list, tuple)) else only["id"]
         except Exception as e:
             logger.error(f"[MEMORY-ID-RESOLVE] Failed for '{token}': {e}")
         return None
@@ -837,12 +828,10 @@ class MemoryManager:
                 
                 existing_summaries.add(summary.lower())
                 
-                mem_id = str(uuid.uuid4())
                 embedding_blob = np.array(mem["embedding"], dtype=np.float32).tobytes()
                 
                 insert_data.append(
                     (
-                        mem_id,
                         summary,
                         mem["m_type"],
                         self._normalize_embedding_namespace(mem.get("embedding_namespace")),
@@ -857,9 +846,9 @@ class MemoryManager:
                 
             if insert_data:
                 cursor.executemany("""
-                    INSERT INTO memories (id, summary, memory_type, embedding_namespace, priority, 
+                    INSERT INTO memories (summary, memory_type, embedding_namespace, priority, 
                                         last_used_at, use_count, status, embedding, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, insert_data)
                 self.db.commit()
                 self._invalidate_cache()

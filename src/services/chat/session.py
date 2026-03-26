@@ -65,8 +65,6 @@ class SessionManager:
         self.HISTORY_SUMMARY_MIN_EXTRACT = max(2, int(HISTORY_SUMMARY_MIN_EXTRACT))
         self.HISTORY_EST_CHARS_PER_TOKEN = max(2, int(HISTORY_EST_CHARS_PER_TOKEN))
         self.SESSION_DIR = SESSION_DIR
-        self.IMG_PREFIX = ":::IMG_PATH:::"
-        self.VID_PREFIX = ":::VID_PATH:::"
         self.SESSION_FILE = os.path.join(SESSION_DIR, "session.json")
         self._last_save_time = 0.0
         self._save_debounce_seconds = 0.75
@@ -108,6 +106,8 @@ class SessionManager:
         ai_text: str,
         image_path: str = None,
         video_path: str = None,
+        ai_workspace_image_path: str = None,
+        ai_workspace_video_path: str = None,
         interaction_source: str = "user",
     ):
         with self.get_lock():
@@ -119,11 +119,13 @@ class SessionManager:
                 user_text=user_text,
                 image_path=image_path,
                 video_path=video_path,
+                ai_workspace_image_path=ai_workspace_image_path,
+                ai_workspace_video_path=ai_workspace_video_path,
                 now_time=now_time,
             )
             model_text = self._sanitize_model_text(ai_text)
             self.session_data.append(user_message)
-            self.session_data.append({"role": "model", "parts": [model_text], "time": now_time})
+            self.session_data.append({"role": "model", "parts": [model_text], "time": now_time, "media_refs": []})
 
             extracted = self._handle_history_limit()
             self._update_interaction_time(interaction_source=interaction_source)
@@ -144,7 +146,7 @@ class SessionManager:
                 return []
 
             now_time = format_human_time(now_local())
-            self.session_data.append({"role": "model", "parts": [text], "time": now_time})
+            self.session_data.append({"role": "model", "parts": [text], "time": now_time, "media_refs": []})
             extracted = self._handle_history_limit()
             self._update_interaction_time(interaction_source=interaction_source)
             self._save_session_to_disk(force=True)
@@ -166,20 +168,28 @@ class SessionManager:
             for msg in reversed(self.session_data):
                 if not isinstance(msg, dict) or msg.get("role") != "model":
                     continue
-                parts = msg.get("parts", [])
-                if not isinstance(parts, list):
-                    parts = []
-                existing = {str(x) for x in parts if isinstance(x, str)}
+                media_refs = self._normalize_media_refs(msg)
+                existing_hosts = {
+                    str(ref.get("host_path") or "").strip()
+                    for ref in media_refs
+                    if isinstance(ref, dict) and str(ref.get("kind") or "").strip().lower() == "image"
+                }
                 changed = False
                 for path in clean_paths[:5]:
-                    marker = f"{self.IMG_PREFIX}{path}"
-                    if marker in existing:
+                    if path in existing_hosts:
                         continue
-                    parts.append(marker)
-                    existing.add(marker)
+                    media_refs.append(
+                        {
+                            "kind": "image",
+                            "host_path": path,
+                            "ai_workspace_path": "",
+                            "role": "model",
+                        }
+                    )
+                    existing_hosts.add(path)
                     changed = True
                 if changed:
-                    msg["parts"] = parts
+                    msg["media_refs"] = media_refs
                     self._save_session_to_disk(force=True)
                     return True
                 return False
@@ -191,14 +201,31 @@ class SessionManager:
         image_path: Optional[str],
         now_time: str,
         video_path: Optional[str] = None,
+        ai_workspace_image_path: Optional[str] = None,
+        ai_workspace_video_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         base_text = str(user_text or "").strip()
         u_parts = [base_text] if base_text else []
+        media_refs = []
         if image_path and os.path.exists(image_path) and not _is_sticker_media_path(image_path):
-            u_parts.append(f"{self.IMG_PREFIX}{image_path}")
+            media_refs.append(
+                {
+                    "kind": "image",
+                    "host_path": image_path,
+                    "ai_workspace_path": str(ai_workspace_image_path or "").strip(),
+                    "role": "user",
+                }
+            )
         if video_path and os.path.exists(video_path) and not _is_sticker_media_path(video_path):
-            u_parts.append(f"{self.VID_PREFIX}{video_path}")
-        return {"role": "user", "parts": u_parts, "time": now_time}
+            media_refs.append(
+                {
+                    "kind": "video",
+                    "host_path": video_path,
+                    "ai_workspace_path": str(ai_workspace_video_path or "").strip(),
+                    "role": "user",
+                }
+            )
+        return {"role": "user", "parts": u_parts, "time": now_time, "media_refs": media_refs}
 
     @staticmethod
     def _sanitize_model_text(text: str) -> str:
@@ -217,8 +244,10 @@ class SessionManager:
         for msg in self.session_data:
             if not isinstance(msg, dict):
                 continue
-            if msg.get("role") != "model":
-                continue
+            normalized_refs = self._normalize_media_refs(msg)
+            if normalized_refs != msg.get("media_refs"):
+                msg["media_refs"] = normalized_refs
+                changed = True
             parts = msg.get("parts", [])
             if not isinstance(parts, list):
                 continue
@@ -237,6 +266,42 @@ class SessionManager:
                 changed = True
         return changed
 
+    def _normalize_media_refs(self, msg: Dict[str, Any]) -> List[Dict[str, str]]:
+        refs = []
+        raw_refs = msg.get("media_refs", [])
+        if isinstance(raw_refs, list):
+            for item in raw_refs:
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("kind") or "").strip().lower()
+                if kind not in {"image", "video"}:
+                    continue
+                host_path = str(item.get("host_path") or "").strip()
+                ai_workspace_path = str(item.get("ai_workspace_path") or "").strip()
+                role = str(item.get("role") or msg.get("role") or "").strip().lower() or "user"
+                refs.append(
+                    {
+                        "kind": kind,
+                        "host_path": host_path,
+                        "ai_workspace_path": ai_workspace_path,
+                        "role": role,
+                    }
+                )
+        deduped = []
+        seen = set()
+        for ref in refs:
+            key = (
+                ref.get("kind", ""),
+                ref.get("host_path", ""),
+                ref.get("ai_workspace_path", ""),
+                ref.get("role", ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(ref)
+        return deduped
+
     def _handle_history_limit(self) -> List[Dict]:
         extracted = []
         if len(self.session_data) >= self.MAX_HISTORY:
@@ -254,15 +319,16 @@ class SessionManager:
             if not isinstance(msg, dict):
                 continue
             parts = msg.get("parts", [])
+            media_refs = self._normalize_media_refs(msg)
+            for ref in media_refs:
+                if str(ref.get("kind") or "").strip().lower() == "image":
+                    total_tokens += 24 if str(ref.get("ai_workspace_path") or "").strip() else 258
+                elif str(ref.get("kind") or "").strip().lower() == "video":
+                    total_tokens += 24 if str(ref.get("ai_workspace_path") or "").strip() else 512
             for p in parts:
                 if not isinstance(p, str):
                     continue
-                if p.startswith(self.IMG_PREFIX):
-                    total_tokens += 258
-                elif p.startswith(self.VID_PREFIX):
-                    total_tokens += 512
-                else:
-                    total_tokens += max(1, len(str(p)) // self.HISTORY_EST_CHARS_PER_TOKEN)
+                total_tokens += max(1, len(str(p)) // self.HISTORY_EST_CHARS_PER_TOKEN)
             if msg.get("time") is not None:
                 total_tokens += 8
         return max(1, total_tokens)

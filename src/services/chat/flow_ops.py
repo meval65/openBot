@@ -18,6 +18,8 @@ from src.services.media.pipeline import (
     ingest_local_video,
     is_sticker_path,
 )
+from src.services.media.image_service import store_image_permanently
+from src.services.media.video_service import prepare_video_for_chat
 from src.services.chat.tool_prompt import build_tool_usage_directive
 from src.services.chat.workspace_context import build_workspace_snapshot
 from src.services.chat.media_parts import part_from_bytes_with_resolution
@@ -28,20 +30,30 @@ BACKGROUND_ANALYSIS_DELAY_SECONDS = 30.0
 BACKGROUND_ANALYSIS_WINDOW = 30
 
 
-def _stage_media_for_ai_workspace(self, local_path: Optional[str], media_kind: str) -> str:
+def _stage_media_for_ai_workspace(self, local_path: Optional[str], media_kind: str) -> Dict[str, str]:
     path = str(local_path or "").strip()
     if not path or not os.path.isfile(path):
-        return ""
+        return {}
     try:
         staged = self.terminal_service.stage_local_file_to_workspace(path, media_kind=media_kind)
     except Exception as e:
         logger.warning("[AI-WORKSPACE] Failed staging %s '%s': %s", media_kind, path, e)
-        return ""
+        return {}
     if not isinstance(staged, dict) or not staged.get("ok"):
         err = str((staged or {}).get("error") or "unknown")
         logger.warning("[AI-WORKSPACE] Failed staging %s '%s': %s", media_kind, path, err)
-        return ""
-    return str(staged.get("container_path") or "").strip()
+        return {}
+    return {
+        "host_path": str(staged.get("host_path") or "").strip(),
+        "container_path": str(staged.get("container_path") or "").strip(),
+    }
+
+
+def _canonical_media_paths(fallback_host_path: Optional[str], staged: Optional[Dict[str, str]]) -> tuple[str, str]:
+    fallback = str(fallback_host_path or "").strip()
+    staged_host = str((staged or {}).get("host_path") or "").strip()
+    staged_container = str((staged or {}).get("container_path") or "").strip()
+    return (staged_host or fallback, staged_container)
 
 
 def build_generation_state(
@@ -164,25 +176,35 @@ def execute_flow(
 
     history_image_path = permanent_image_path if (permanent_image_path and not is_sticker_path(permanent_image_path)) else None
     history_video_path = permanent_video_path if (permanent_video_path and not is_sticker_path(permanent_video_path)) else None
-    workspace_image_path = _stage_media_for_ai_workspace(self, history_image_path, "image") if history_image_path else ""
-    workspace_video_path = _stage_media_for_ai_workspace(self, history_video_path, "video") if history_video_path else ""
+    staged_image = _stage_media_for_ai_workspace(self, history_image_path, "image") if history_image_path else {}
+    staged_video = _stage_media_for_ai_workspace(self, history_video_path, "video") if history_video_path else {}
+    if history_image_path and not staged_image:
+        persisted_image_path = str(store_image_permanently(history_image_path) or "").strip()
+        if persisted_image_path and os.path.isfile(persisted_image_path):
+            history_image_path = persisted_image_path
+    if history_video_path and not staged_video:
+        persisted_video_path = str(prepare_video_for_chat(self.cache_db, history_video_path) or "").strip()
+        if persisted_video_path and os.path.isfile(persisted_video_path):
+            history_video_path = persisted_video_path
+    history_image_path, workspace_image_path = _canonical_media_paths(history_image_path, staged_image)
+    history_video_path, workspace_video_path = _canonical_media_paths(history_video_path, staged_video)
 
     combined_text = user_text or ""
     media_path_lines: List[str] = []
-    if history_image_path:
-        media_path_lines.append(f"[IMG_PATH] {history_image_path}")
-    if history_video_path:
-        media_path_lines.append(f"[VID_PATH] {history_video_path}")
     if workspace_image_path:
         media_path_lines.append(
             f"[AI_WORKSPACE_IMAGE] {workspace_image_path}\n"
             "File gambar yang sudah dinormalisasi ini tersedia di komputer pribadimu dan boleh kamu akses langsung via terminal/tool."
         )
+    elif history_image_path:
+        media_path_lines.append(f"[IMG_PATH] {history_image_path}")
     if workspace_video_path:
         media_path_lines.append(
             f"[AI_WORKSPACE_VIDEO] {workspace_video_path}\n"
             "File video yang sudah dinormalisasi ini tersedia di komputer pribadimu dan boleh kamu akses langsung via terminal/tool."
         )
+    elif history_video_path:
+        media_path_lines.append(f"[VID_PATH] {history_video_path}")
     if media_path_lines:
         path_block = "\n".join(media_path_lines)
         if combined_text:
@@ -227,6 +249,8 @@ def execute_flow(
             clean_response_text,
             history_image_path,
             history_video_path,
+            ai_workspace_image_path=workspace_image_path,
+            ai_workspace_video_path=workspace_video_path,
         )
 
     total_ms = (time.perf_counter() - flow_t0) * 1000.0
@@ -372,6 +396,8 @@ def post_process_response(
     response_text: str,
     image_path: Optional[str],
     video_path: Optional[str] = None,
+    ai_workspace_image_path: Optional[str] = None,
+    ai_workspace_video_path: Optional[str] = None,
 ):
     history_trimmed = False
     extracted = self.session_manager.update_session(
@@ -379,6 +405,8 @@ def post_process_response(
         response_text,
         image_path=image_path,
         video_path=video_path,
+        ai_workspace_image_path=ai_workspace_image_path,
+        ai_workspace_video_path=ai_workspace_video_path,
     )
     token_extracted = self.session_manager.trim_history_by_token_budget(token_counter=self._count_history_tokens_native)
     if token_extracted:
@@ -407,8 +435,6 @@ def generate_rolling_summary(self, extracted_messages: list):
                 p
                 for p in parts
                 if isinstance(p, str)
-                and not p.startswith(":::IMG_PATH:::")
-                and not p.startswith(":::VID_PATH:::")
             )
             if text_part:
                 text_lines.append(f"{role}: {text_part}")

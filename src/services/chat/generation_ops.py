@@ -29,6 +29,13 @@ from src.services.chat.tool_runtime import (
 logger = logging.getLogger(__name__)
 
 
+def get_client_snapshot(self) -> tuple[int, genai.Client]:
+    with self._client_state_lock:
+        key_index = int(self.current_key_index)
+        api_key = str(self.api_keys[key_index])
+    return key_index, genai.Client(api_key=api_key)
+
+
 def select_chat_model_for_attempt(self) -> str:
     primary = str(getattr(self, "primary_chat_model", "") or "").strip()
     if not primary:
@@ -202,28 +209,34 @@ def _consume_staged_tool_image_desc_parts(self) -> List[types.Part]:
 
 def initialize_client(self):
     try:
-        self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
-        logger.info("Chat siap menggunakan API key #%d", self.current_key_index + 1)
+        with self._client_state_lock:
+            self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
+            active_index = int(self.current_key_index)
+        logger.info("Chat siap menggunakan API key #%d", active_index + 1)
     except Exception as e:
         logger.critical("Inisialisasi client chat gagal: %s", e)
         raise
 
 
 def rotate_api_key(self) -> bool:
-    total_keys = len(self.api_keys)
+    with self._client_state_lock:
+        total_keys = len(self.api_keys)
+        current_index = int(self.current_key_index)
     if total_keys <= 0:
         return False
-    start_index = (self.current_key_index + 1) % total_keys
+    start_index = (current_index + 1) % total_keys
     new_key_index = self.health_monitor.get_healthy_key(
         start_index, total_keys
     )
     if new_key_index is None:
         new_key_index = start_index
 
-    self.current_key_index = new_key_index
     try:
-        self._initialize_client()
-        logger.warning("Chat berpindah ke API key #%d", self.current_key_index + 1)
+        with self._client_state_lock:
+            self.current_key_index = int(new_key_index)
+            self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
+            active_index = int(self.current_key_index)
+        logger.warning("Chat berpindah ke API key #%d", active_index + 1)
         return True
     except Exception as e:
         logger.error("Gagal mengganti API key chat: %s", e)
@@ -263,6 +276,7 @@ def call_gemini(self, model: str, contents: list, config=None):
     max_attempts = max(CHAT_MAX_RETRIES, len(self.api_keys) + 1)
     req_t0 = time.perf_counter()
     for attempt in range(max_attempts):
+        request_key_index = int(self.current_key_index)
         remaining = self._get_model_penalty_remaining(model)
         if remaining > 0:
             sleep_for = min(remaining, HIGH_DEMAND_MAX_DELAY)
@@ -273,7 +287,8 @@ def call_gemini(self, model: str, contents: list, config=None):
             )
             time.sleep(sleep_for)
         try:
-            response = self.client.models.generate_content(
+            request_key_index, request_client = self._get_client_snapshot()
+            response = request_client.models.generate_content(
                 model=model,
                 contents=contents,
                 config=config,
@@ -287,7 +302,7 @@ def call_gemini(self, model: str, contents: list, config=None):
                 total_tokens=total_tok,
                 latency_ms=(time.perf_counter() - req_t0) * 1000.0,
             )
-            self.health_monitor.mark_success(self.current_key_index)
+            self.health_monitor.mark_success(request_key_index)
             logger.info("[CHAT-PROVIDER] provider=gemini mode=generate_content model=%s", model)
             return response
         except Exception as e:
@@ -297,7 +312,7 @@ def call_gemini(self, model: str, contents: list, config=None):
             logger.warning(
                 "Percobaan %d gagal (API key #%d, model %s): %s",
                 attempt + 1,
-                self.current_key_index + 1,
+                request_key_index + 1,
                 model,
                 e,
             )
@@ -305,7 +320,7 @@ def call_gemini(self, model: str, contents: list, config=None):
                 logger.error(
                     "Request tidak valid untuk model %s (API key #%d), percobaan dihentikan.",
                     model,
-                    self.current_key_index + 1,
+                    request_key_index + 1,
                 )
                 raise
 
@@ -389,6 +404,7 @@ def generate_with_tools(
     try:
         for attempt in range(max_attempts):
             att_t0 = time.perf_counter()
+            request_key_index = int(self.current_key_index)
             active_model = select_chat_model_for_attempt(self)
             remaining = self._get_model_penalty_remaining(active_model)
             if remaining > 0:
@@ -401,6 +417,7 @@ def generate_with_tools(
                 time.sleep(sleep_for)
 
             try:
+                request_key_index, request_client = self._get_client_snapshot()
                 attempt_system_prompt = system_prompt
                 if (not tools_enabled) and fallback_reason:
                     attempt_system_prompt = make_honest_fallback_system()
@@ -408,7 +425,7 @@ def generate_with_tools(
                     tools_enabled=tools_enabled,
                     system_instruction_text=attempt_system_prompt,
                 )
-                chat = self.client.chats.create(
+                chat = request_client.chats.create(
                     model=active_model,
                     history=history,
                     config=config,
@@ -492,7 +509,7 @@ def generate_with_tools(
                             latency_ms=(time.perf_counter() - att_t0) * 1000.0,
                         )
                         self._update_visual_token_calibration(in_tok)
-                        self.health_monitor.mark_success(self.current_key_index)
+                        self.health_monitor.mark_success(request_key_index)
                         logger.info(
                             "[CHAT-PROVIDER] provider=gemini mode=%s model=%s",
                             "chat_with_tools" if tools_enabled else "chat_tools_disabled",
@@ -531,7 +548,7 @@ def generate_with_tools(
                     "Generate dengan tools gagal (percobaan %d/%d, API key #%d): %s",
                     attempt + 1,
                     max_attempts,
-                    self.current_key_index + 1,
+                    request_key_index + 1,
                     e,
                 )
 
@@ -618,18 +635,20 @@ def generate_no_tools(
     max_attempts = max(2, CHAT_MAX_RETRIES)
     gen_t0 = time.perf_counter()
     for attempt in range(max_attempts):
+        request_key_index = int(self.current_key_index)
         active_model = select_chat_model_for_attempt(self)
         remaining = self._get_model_penalty_remaining(active_model)
         if remaining > 0:
             time.sleep(min(remaining, HIGH_DEMAND_MAX_DELAY))
         try:
+            request_key_index, request_client = self._get_client_snapshot()
             config = types.GenerateContentConfig(
                 temperature=self.bot_config.temperature,
                 top_p=self.bot_config.top_p,
                 max_output_tokens=self.bot_config.max_output_tokens,
                 system_instruction=system_prompt,
             )
-            chat = self.client.chats.create(
+            chat = request_client.chats.create(
                 model=active_model,
                 history=history,
                 config=config,
@@ -646,7 +665,7 @@ def generate_no_tools(
                     latency_ms=(time.perf_counter() - gen_t0) * 1000.0,
                 )
                 self._update_visual_token_calibration(in_tok)
-                self.health_monitor.mark_success(self.current_key_index)
+                self.health_monitor.mark_success(request_key_index)
                 logger.info("[CHAT-PROVIDER] provider=gemini mode=chat_plain model=%s", active_model)
                 return response.text.strip()
             empty_summary = _summarize_empty_response(response)
