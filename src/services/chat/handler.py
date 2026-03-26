@@ -26,6 +26,7 @@ from src.config import (
     TOOLS_ENABLE_AI_PERSONAL_COMPUTER,
 )
 from src.database.connection import DBConnection
+from src.services.analysis import ProactiveLearning
 from src.services.chat import flow_ops, generation_ops, intent_ops, media_ops, token_ops
 from src.services.chat.context import ContextBuilder
 from src.services.chat.session import SessionManager
@@ -175,6 +176,7 @@ class ChatHandler:
         self._runtime_paused = False
         self._runtime_pause_reason = ""
         self._terminal_monitor_started = False
+        self.proactive_learning = ProactiveLearning()
 
         self._initialize_client()
         self._tools = self._build_python_tools()
@@ -542,6 +544,7 @@ class ChatHandler:
                 video_path=video_path,
                 user_profile_context=user_profile_context,
             )
+            self.proactive_learning.record_user_message()
             success = True
             return result
         except LLMGenerationError as e:

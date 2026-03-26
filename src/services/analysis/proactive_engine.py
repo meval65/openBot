@@ -12,7 +12,12 @@ import requests
 from pymeteosource.api import Meteosource
 from pymeteosource.types import sections, tiers, units
 
-from src.config import BOT_DISPLAY_NAME, METEOSOURCE_API_KEY, PROACTIVE_ANALYSIS_MODEL
+from src.config import (
+    BOT_DISPLAY_NAME,
+    METEOSOURCE_API_KEY,
+    PROACTIVE_ANALYSIS_MODEL,
+    PROACTIVE_MIN_SEND_GAP_SECONDS,
+)
 from src.utils.api_utils import with_retry
 from src.utils.time_utils import now_local as _now_local, to_local_aware
 
@@ -30,11 +35,12 @@ BOT_SLUG = re.sub(r"[^a-z0-9]+", "-", BOT_DISPLAY_NAME.lower()).strip("-") or "a
 NIGHT_START_HOUR = 23
 NIGHT_END_HOUR = 6
 MIN_INTERACTION_GAP_SECONDS = 30 * 60
-MIN_PROACTIVE_GAP_SECONDS = 30 * 60
+MIN_PROACTIVE_GAP_SECONDS = int(PROACTIVE_MIN_SEND_GAP_SECONDS)
 TICK_INTERVAL_MIN = 45 * 60
 TICK_INTERVAL_MAX = 90 * 60
 REPEAT_WINDOW_SECONDS = 3600
 REPEAT_SIMILARITY_THRESHOLD = 0.72
+MIN_LEARNING_SCORE = 0.35
 
 
 def _is_night_mode() -> bool:
@@ -147,6 +153,11 @@ def _build_decision_prompt(
     schedules_text = "\n".join(sched_lines) if sched_lines else "Tidak ada jadwal aktif."
 
     persona = str(chat_handler.get_effective_instruction() or "").strip() or "Tidak ada instruksi khusus."
+    learning_summary = "Belum ada data ritme."
+    try:
+        learning_summary = str(chat_handler.proactive_learning.get_prompt_summary() or learning_summary).strip()
+    except Exception:
+        pass
 
     return f"""Kamu modul internal pengambil keputusan proactive.
 Putuskan apakah saat ini AI perlu mengirim pesan spontan ke user.
@@ -155,6 +166,7 @@ Konteks:
 - Waktu lokal: {now_str}
 - Jeda sejak interaksi user terakhir: {gap_text}
 - Cuaca: {_get_weather_summary()}
+- Sinyal ritme interaksi user: {learning_summary}
 
 Ringkasan percakapan:
 {rolling_summary}
@@ -268,6 +280,12 @@ class ProactiveEngine:
         repeated, repeat_reason = _is_repeated_context(chat_handler, candidate_context)
         if repeated:
             return False, f"repeat:{repeat_reason}"
+        try:
+            learning_score = float(chat_handler.proactive_learning.get_score_snapshot().get("final_score", 0.0) or 0.0)
+            if source != "schedule" and learning_score < MIN_LEARNING_SCORE:
+                return False, f"learning_score:{learning_score:.2f}"
+        except Exception as e:
+            logger.warning("[PROACTIVE-ENGINE] Learning score check failed: %s", e)
 
         return True, "allow"
 
@@ -299,6 +317,14 @@ class ProactiveEngine:
             logger.info("[PROACTIVE-ENGINE] Cooldown active (%ss). Skip.", proactive_gap)
             self._reschedule()
             return None
+        try:
+            learning_score = float(chat_handler.proactive_learning.get_score_snapshot().get("final_score", 0.0) or 0.0)
+            if learning_score < MIN_LEARNING_SCORE:
+                logger.info("[PROACTIVE-ENGINE] Learning score too low (%.2f). Skip.", learning_score)
+                self._reschedule()
+                return None
+        except Exception as e:
+            logger.warning("[PROACTIVE-ENGINE] Learning score read failed: %s", e)
 
         prompt = _build_decision_prompt(chat_handler, memory_manager, scheduler_service, gap_seconds)
         decision = _call_openrouter_decision(api_key, prompt)

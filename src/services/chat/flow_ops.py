@@ -498,6 +498,10 @@ def finalize_proactive_delivery(self, proactive_context: str, response_text: str
     self.session_manager.append_model_message(text, interaction_source="proactive")
     self.session_manager.record_proactive_trigger_context(proactive_context)
     self.session_manager.mark_proactive_sent()
+    try:
+        self.proactive_learning.record_proactive_sent()
+    except Exception as e:
+        logger.warning("[PROACTIVE] Failed recording proactive learning event: %s", e)
 
 
 
