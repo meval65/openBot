@@ -188,6 +188,7 @@ async def _deliver_final_text_and_outbound(update: Update, chat_handler, final_t
                 outbound_files,
                 remaining_text,
                 send_document=lambda **kwargs: update.get_bot().send_document(chat_id=update.effective_chat.id, **kwargs),
+                send_photo=lambda **kwargs: update.get_bot().send_photo(chat_id=update.effective_chat.id, **kwargs),
                 send_text=lambda text: send_chunked_response(update, text),
                 logger=logger,
                 log_prefix="outbound",

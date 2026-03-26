@@ -1,5 +1,6 @@
 import io
 import logging
+import mimetypes
 import os
 from typing import Awaitable, Callable, Optional
 
@@ -118,6 +119,7 @@ async def send_outbound_files_with_caption(
     file_items: list,
     text: str,
     send_document: Callable[..., Awaitable[object]],
+    send_photo: Optional[Callable[..., Awaitable[object]]],
     send_text: Callable[[str], Awaitable[object]],
     logger: Optional[logging.Logger] = None,
     log_prefix: str = "outbound",
@@ -155,24 +157,44 @@ async def send_outbound_files_with_caption(
     sent_count = 0
     for idx, item in enumerate(prepared):
         try:
+            mime_type, _ = mimetypes.guess_type(item["filename"])
+            is_image = bool(mime_type and mime_type.startswith("image/"))
             with open(item["path"], "rb") as fp:
-                doc = InputFile(fp, filename=item["filename"])
                 this_caption = (caption or item["caption"]) if idx == 0 else None
-                try:
-                    await send_document(
-                        document=doc,
-                        caption=this_caption,
-                        parse_mode=ParseMode.HTML if this_caption else None,
-                    )
-                    sent_count += 1
-                except TelegramError:
-                    fp.seek(0)
-                    doc_plain = InputFile(fp, filename=item["filename"])
-                    await send_document(
-                        document=doc_plain,
-                        caption=this_caption,
-                    )
-                    sent_count += 1
+                if is_image and callable(send_photo):
+                    photo = InputFile(fp, filename=item["filename"])
+                    try:
+                        await send_photo(
+                            photo=photo,
+                            caption=this_caption,
+                            parse_mode=ParseMode.HTML if this_caption else None,
+                        )
+                        sent_count += 1
+                    except TelegramError:
+                        fp.seek(0)
+                        photo_plain = InputFile(fp, filename=item["filename"])
+                        await send_photo(
+                            photo=photo_plain,
+                            caption=this_caption,
+                        )
+                        sent_count += 1
+                else:
+                    doc = InputFile(fp, filename=item["filename"])
+                    try:
+                        await send_document(
+                            document=doc,
+                            caption=this_caption,
+                            parse_mode=ParseMode.HTML if this_caption else None,
+                        )
+                        sent_count += 1
+                    except TelegramError:
+                        fp.seek(0)
+                        doc_plain = InputFile(fp, filename=item["filename"])
+                        await send_document(
+                            document=doc_plain,
+                            caption=this_caption,
+                        )
+                        sent_count += 1
         except Exception as e:
             if logger:
                 logger.error(f"Failed sending {log_prefix} file '{item.get('path')}': {e}")
