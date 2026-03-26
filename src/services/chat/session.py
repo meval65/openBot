@@ -109,8 +109,6 @@ class SessionManager:
         image_path: str = None,
         video_path: str = None,
         interaction_source: str = "user",
-        image_description: Optional[str] = None,
-        video_description: Optional[str] = None,
     ):
         with self.get_lock():
             if not self._is_loaded:
@@ -122,8 +120,6 @@ class SessionManager:
                 image_path=image_path,
                 video_path=video_path,
                 now_time=now_time,
-                image_description=image_description,
-                video_description=video_description,
             )
             model_text = self._sanitize_model_text(ai_text)
             self.session_data.append(user_message)
@@ -153,18 +149,6 @@ class SessionManager:
             self._update_interaction_time(interaction_source=interaction_source)
             self._save_session_to_disk(force=True)
             return extracted
-
-    def update_latest_media_meta(
-        self,
-        image_path: Optional[str] = None,
-        video_path: Optional[str] = None,
-        image_description: Optional[str] = None,
-        video_description: Optional[str] = None,
-    ) -> bool:
-        return False
-
-    def update_latest_model_image_meta(self, image_descriptions: List[str]) -> bool:
-        return False
 
     def attach_latest_model_image_paths(self, image_paths: List[str]) -> bool:
         with self.get_lock():
@@ -207,8 +191,6 @@ class SessionManager:
         image_path: Optional[str],
         now_time: str,
         video_path: Optional[str] = None,
-        image_description: Optional[str] = None,
-        video_description: Optional[str] = None,
     ) -> Dict[str, Any]:
         base_text = str(user_text or "").strip()
         u_parts = [base_text] if base_text else []

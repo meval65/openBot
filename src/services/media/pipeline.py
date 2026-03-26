@@ -3,7 +3,6 @@ from typing import Dict, Optional
 
 from src.config import INPUT_IMAGE_MEDIA_RESOLUTION, STICKER_MEDIA_RESOLUTION
 from src.services.media.image_service import (
-    generate_image_description,
     get_image_analysis_payload,
     ingest_web_image,
     read_image_bytes,
@@ -13,7 +12,6 @@ from src.services.media.image_service import (
 )
 from src.services.media.video_service import (
     estimate_video_visual_units,
-    generate_video_description,
     get_video_collage_payload,
     prepare_video_for_chat,
     read_video_bytes,
@@ -119,15 +117,6 @@ def build_video_sticker_payload(db, path: str) -> Dict:
         "used_collage": False,
         "frame_count": 0,
     }
-
-
-def describe_media(chat_handler, kind: str, path: str, user_caption: str, extra_context: str = "") -> str:
-    if kind == "image":
-        return generate_image_description(chat_handler, path, user_caption, extra_context=extra_context)
-    if kind == "video":
-        return generate_video_description(chat_handler, path, user_caption, extra_context=extra_context)
-    raise ValueError(f"Unsupported media kind: {kind}")
-
 
 def resolve_web_image(chat_handler, source_url: str) -> Optional[Dict]:
     return resolve_cached_web_image(chat_handler, source_url)

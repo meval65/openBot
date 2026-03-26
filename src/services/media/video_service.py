@@ -10,12 +10,10 @@ import tempfile
 from typing import Optional, Tuple
 
 from PIL import Image, ImageDraw
-from google.genai import types
 
 from src.config import (
     ANIMATED_COLLAGE_CACHE_DIR,
     HISTORY_VISUAL_PART_TOKEN_BASE,
-    IMAGE_DESCRIPTION_MODEL,
     STICKER_VIDEO_STORE_DIR,
     VIDEO_MAX_DURATION_SECONDS,
     VIDEO_VISUAL_BASE_TOKENS,
@@ -423,37 +421,15 @@ def store_video_embedding(chat_handler, analyzer, memory_manager, video_path: st
 
 
 def generate_video_description(chat_handler, video_path: str, user_caption: str, extra_context: str = "") -> str:
-    try:
-        data, mime_type, video_hash = read_video_bytes(video_path)
-        try:
-            cached_desc = catalog.get_video_description(video_hash)
-            if cached_desc and not str(extra_context or "").strip():
-                desc = str(cached_desc).strip()
-                return str(desc or "").strip() or "User mengirim video."
-        except Exception as e:
-            logger.warning(f"[VIDEO-DESC] Cache read failed: {e}")
+    _, _, video_hash = read_video_bytes(video_path)
+    cached_desc = catalog.get_video_description(video_hash)
+    if cached_desc and not str(extra_context or "").strip():
+        desc = str(cached_desc).strip()
+        return str(desc or "").strip() or "User mengirim video."
 
-        caption_context = f" Konteks dari user: '{user_caption}'" if (user_caption or "").strip() else ""
-        extra_hint = f" Konteks tambahan: '{str(extra_context or '').strip()}'" if str(extra_context or "").strip() else ""
-        prompt_text = (
-            "Buat deskripsi ringkas namun padat (maks 2-3 kalimat) untuk video ini dalam bahasa Indonesia. "
-            "Fokus pada hal yang benar-benar terlihat dan terdengar jelas: aksi utama, objek penting, teks yang terbaca, ekspresi atau gestur yang jelas, dan suasana visual. "
-            "Jangan menebak niat, emosi, atau cerita jika tidak kuat terlihat. Jika ambigu, gunakan deskripsi netral. "
-            "Jangan pakai format field, cukup paragraf singkat."
-            f"{caption_context}{extra_hint}"
-        )
-        response = chat_handler.call_gemini(
-            model=IMAGE_DESCRIPTION_MODEL,
-            contents=[types.Part(text=prompt_text), types.Part.from_bytes(data=data, mime_type=mime_type)],
-            config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=220),
-        )
-        if response and response.text:
-            description = str(response.text).strip()
-            try:
-                catalog.upsert_video_description(video_hash, description, video_path)
-            except Exception as e:
-                logger.warning(f"[VIDEO-DESC] Cache write failed: {e}")
-            return description
-    except Exception as e:
-        logger.warning(f"[VIDEO-DESC] Failed, using caption fallback: {e}")
-    return user_caption[:220] if (user_caption or "").strip() else "User mengirim video."
+    description = str(user_caption or "").strip()[:220] or "User mengirim video."
+    extra = str(extra_context or "").strip()
+    if extra:
+        description = f"{description} | Konteks: {extra[:180]}"
+    catalog.upsert_video_description(video_hash, description, video_path)
+    return description

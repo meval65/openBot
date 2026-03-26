@@ -57,3 +57,4 @@ temp/
 
 # Local utility script not needed in repo
 list_gemini_models.py
+/tests

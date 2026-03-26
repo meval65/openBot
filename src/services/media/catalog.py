@@ -1,7 +1,7 @@
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from src.config import MEDIA_DIR
@@ -12,7 +12,7 @@ _STORE_PATH = os.path.join(MEDIA_DIR, "_catalog.json")
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _default_state() -> Dict:

@@ -12,6 +12,7 @@ from google.genai import types
 
 from src.config import (
     HISTORY_IMAGE_MAX_SIDE,
+    HISTORY_RECENT_MEDIA_WINDOW,
     HISTORY_TOKEN_BUDGET,
     HISTORY_VISUAL_PART_TOKEN_BASE,
     HISTORY_VISUAL_TOKEN_MIN,
@@ -110,7 +111,7 @@ def _generate_video_sticker_response(
         style="strict",
         available_tools=getattr(self, "_tool_names", None),
     )
-    workspace_snapshot = build_workspace_snapshot(self.terminal_service.workspace_dir)
+    workspace_snapshot = build_workspace_snapshot(self._workspace_dir)
     full_system = (
         f"{self.get_effective_instruction()}{tool_usage_directive}\n\n"
         f"{system_context}\n\n"
@@ -253,7 +254,7 @@ def extract_history_image_paths(history) -> set:
     return paths
 
 
-def extract_recent_history_image_paths(history, window: int = 20) -> set:
+def extract_recent_history_image_paths(history, window: int = HISTORY_RECENT_MEDIA_WINDOW) -> set:
     paths = set()
     try:
         recent = list(history or [])[-max(1, int(window)):]
@@ -266,7 +267,7 @@ def extract_recent_history_image_paths(history, window: int = 20) -> set:
     return paths
 
 
-def extract_recent_history_video_paths(history, window: int = 20) -> set:
+def extract_recent_history_video_paths(history, window: int = HISTORY_RECENT_MEDIA_WINDOW) -> set:
     paths = set()
     try:
         recent = list(history or [])[-max(1, int(window)):]
@@ -297,6 +298,8 @@ def build_gemini_history(self, history) -> List[types.Content]:
     # avoid dropping too low even when calibrated factor decreases.
     est_per_part = max(258, int(base_per_part * factor))
     history_img_max_side = max(512, int(HISTORY_IMAGE_MAX_SIDE))
+    recent_image_paths = extract_recent_history_image_paths(history, window=HISTORY_RECENT_MEDIA_WINDOW)
+    recent_video_paths = extract_recent_history_video_paths(history, window=HISTORY_RECENT_MEDIA_WINDOW)
 
     def _read_history_image_bytes(path: str, max_side: int = 480) -> tuple[bytes, str]:
         try:
@@ -335,6 +338,8 @@ def build_gemini_history(self, history) -> List[types.Content]:
                     continue
                 content_parts.append(types.Part(text=f"[IMG_PATH] {img_path}"))
                 if (
+                    img_path in recent_image_paths
+                    and
                     used_visual_tokens < visual_budget_tokens
                     and os.path.exists(img_path)
                 ):
@@ -370,6 +375,8 @@ def build_gemini_history(self, history) -> List[types.Content]:
                     continue
                 content_parts.append(types.Part(text=f"[VID_PATH] {vid_path}"))
                 if (
+                    vid_path in recent_video_paths
+                    and
                     used_visual_tokens < visual_budget_tokens
                     and os.path.exists(vid_path)
                 ):

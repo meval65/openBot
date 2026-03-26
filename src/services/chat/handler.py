@@ -15,12 +15,15 @@ from src.config import (
     DOCKER_COMPUTER_MEMORY_LIMIT,
     GOOGLE_API_KEYS,
     HEALTH_DIR,
+    HISTORY_RECENT_MEDIA_WINDOW,
     HISTORY_VISUAL_FACTOR_MAX,
     HISTORY_VISUAL_FACTOR_MIN,
-    MULTIMODAL_ANALYSIS_MODEL,
     RUNTIME_DIR,
     STORAGE_DIR,
     BotConfig,
+    TOOLS_ENABLE_AI_PC_INSPECT_IMAGES,
+    TOOLS_ENABLE_AI_PC_SEND_FILES,
+    TOOLS_ENABLE_AI_PERSONAL_COMPUTER,
 )
 from src.database.connection import DBConnection
 from src.services.chat import flow_ops, generation_ops, intent_ops, media_ops, token_ops
@@ -97,7 +100,6 @@ class ChatHandler:
             self.primary_chat_model,
             self.chat_model_candidates,
         )
-        self.multimodal_analysis_model = MULTIMODAL_ANALYSIS_MODEL
         self.session_manager = SessionManager()
         self.context_builder = ContextBuilder()
 
@@ -118,20 +120,17 @@ class ChatHandler:
         self._model_penalty_lock = threading.Lock()
         self._model_penalty_until: Dict[str, float] = {}
 
-        self._tavily = TavilySearchService()
         _bot_terminal_id = (
             os.getenv("BOT_INSTANCE")
             or os.getenv("BOT_NAME")
             or os.getenv("BOT_ID")
             or "bot"
         )
-        self.terminal_service = TerminalService(
-            bot_id=_bot_terminal_id,
-            runtime_dir=RUNTIME_DIR,
-            storage_dir=STORAGE_DIR,
-            docker_image=DOCKER_COMPUTER_IMAGE,
-            memory_limit=DOCKER_COMPUTER_MEMORY_LIMIT,
-        )
+        self._bot_terminal_id = str(_bot_terminal_id).strip() or "bot"
+        self._workspace_dir = os.path.join(RUNTIME_DIR, "terminal", "workspace")
+        os.makedirs(self._workspace_dir, exist_ok=True)
+        self._tavily_service: Optional[TavilySearchService] = None
+        self._terminal_service: Optional[TerminalService] = None
 
         self._perf_lock = threading.Lock()
         self._perf_stats = {
@@ -176,7 +175,32 @@ class ChatHandler:
         self._tools = self._build_python_tools()
         self._all_tools = self._tools
         self._tool_names = [fn.__name__ for fn in (self._tools or [])]
-        self._warmup_terminal_sandbox_async()
+        if any(
+            (
+                TOOLS_ENABLE_AI_PERSONAL_COMPUTER,
+                TOOLS_ENABLE_AI_PC_INSPECT_IMAGES,
+                TOOLS_ENABLE_AI_PC_SEND_FILES,
+            )
+        ):
+            self._warmup_terminal_sandbox_async()
+
+    @property
+    def _tavily(self) -> TavilySearchService:
+        if self._tavily_service is None:
+            self._tavily_service = TavilySearchService()
+        return self._tavily_service
+
+    @property
+    def terminal_service(self) -> TerminalService:
+        if self._terminal_service is None:
+            self._terminal_service = TerminalService(
+                bot_id=self._bot_terminal_id,
+                runtime_dir=RUNTIME_DIR,
+                storage_dir=STORAGE_DIR,
+                docker_image=DOCKER_COMPUTER_IMAGE,
+                memory_limit=DOCKER_COMPUTER_MEMORY_LIMIT,
+            )
+        return self._terminal_service
 
     def get_effective_instruction(self) -> str:
         base_instruction = str(getattr(self.bot_config, "instruction", "") or "").strip()
@@ -250,7 +274,7 @@ class ChatHandler:
         return media_ops.extract_history_image_paths(history)
 
     @staticmethod
-    def _extract_recent_history_image_paths(history, window: int = 20) -> set:
+    def _extract_recent_history_image_paths(history, window: int = HISTORY_RECENT_MEDIA_WINDOW) -> set:
         return media_ops.extract_recent_history_image_paths(history, window=window)
 
     def _build_gemini_history(self, history) -> List[types.Content]:
@@ -687,4 +711,3 @@ class ChatHandler:
             "latency_ms_p95": p95,
             "last_error": last_error,
         }
-

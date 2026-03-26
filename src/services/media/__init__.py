@@ -9,7 +9,6 @@ from .video_service import (
 )
 from .pipeline import (
     build_video_sticker_payload,
-    describe_media,
     ingest_local_image,
     ingest_local_video,
     ingest_web_image_to_cache,
@@ -28,7 +27,6 @@ __all__ = [
     "ingest_local_image",
     "ingest_local_video",
     "build_video_sticker_payload",
-    "describe_media",
     "resolve_web_image",
     "ingest_web_image_to_cache",
     "is_sticker_path",

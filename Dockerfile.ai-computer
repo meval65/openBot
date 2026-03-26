@@ -1,0 +1,49 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    coreutils \
+    curl \
+    file \
+    findutils \
+    ffmpeg \
+    gawk \
+    grep \
+    jq \
+    less \
+    locales \
+    nano \
+    procps \
+    python3 \
+    python3-pip \
+    python3-venv \
+    ripgrep \
+    sed \
+    tar \
+    tzdata \
+    unzip \
+    wget \
+    xz-utils \
+    zip \
+    htop \
+    && locale-gen C.UTF-8 \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip config set global.break-system-packages true
+
+RUN python3 -m pip install --no-cache-dir \
+    ipython \
+    numpy \
+    pillow \
+    requests \
+    matplotlib
+
+WORKDIR /workspace
+
+CMD ["sleep", "infinity"]

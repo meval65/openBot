@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from src.config import DOCKER_COMPUTER_IMAGE, DOCKER_COMPUTER_MEMORY_LIMIT
@@ -113,7 +113,7 @@ class DockerTerminalService:
             }
         script = self._wrap_command(cmd, work_dir)
         started = time.time()
-        started_iso = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        started_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         run_id = str(uuid.uuid4())
         timed_out = False
         exit_code = None

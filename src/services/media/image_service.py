@@ -14,11 +14,9 @@ import PIL.Image
 import PIL.ImageDraw
 import PIL.ImageSequence
 import numpy as np
-from google.genai import types
 
 from src.config import (
     ANIMATED_COLLAGE_CACHE_DIR,
-    IMAGE_DESCRIPTION_MODEL,
     IMAGE_STORE_DIR,
     MAX_IMAGE_PIXELS,
     STICKER_STORE_DIR,
@@ -522,82 +520,66 @@ def _save_tile(tile: PIL.Image.Image, base_dir: str, group_hash: str, idx: int) 
     return path
 
 
+def _compose_visual_description(
+    media_label: str,
+    user_caption: str,
+    extra_context: str = "",
+    detail_hint: str = "",
+) -> str:
+    parts = []
+    caption = str(user_caption or "").strip()
+    if caption:
+        parts.append(caption[:220])
+    context = str(extra_context or "").strip()
+    if context:
+        parts.append(f"Konteks: {context[:180]}")
+    if detail_hint:
+        parts.append(detail_hint[:180])
+    if parts:
+        return " | ".join(parts)
+    return f"User mengirim {media_label}."
+
+
 def generate_image_description(chat_handler, image_path: str, user_caption: str, extra_context: str = "") -> str:
-    try:
-        _, _, sha256_hex = read_image_bytes(image_path)
+    _, _, sha256_hex = read_image_bytes(image_path)
+    cached = _get_cache_value(chat_handler, sha256_hex)
+    if cached and not str(extra_context or "").strip():
+        logger.info(f"[IMG-CACHE] Found cached description for {sha256_hex}")
+        return cached
 
-        cached = _get_cache_value(chat_handler, sha256_hex)
-        if cached and not str(extra_context or "").strip():
-            logger.info(f"[IMG-CACHE] Found cached description for {sha256_hex}")
-            return cached
+    _, _, animated_mode, animated_frame_count = get_image_analysis_payload(image_path)
+    detail_hint = ""
+    if animated_mode:
+        media_label = "sticker animasi" if _is_sticker_image_path(image_path) else "gambar animasi"
+        if animated_frame_count > 0:
+            detail_hint = f"Frame ringkasan: {int(animated_frame_count)}."
+    else:
+        media_label = "sebuah gambar"
 
-        data, mime_type, animated_mode, animated_frame_count = get_image_analysis_payload(image_path)
-        image_part = types.Part.from_bytes(data=data, mime_type=mime_type)
-
-        caption_context = f" Konteks dari user: '{user_caption}'" if user_caption.strip() else ""
-        extra_hint = f" Konteks tambahan: '{str(extra_context or '').strip()}'" if str(extra_context or "").strip() else ""
-        if animated_mode:
-            media_label = "sticker animasi" if _is_sticker_image_path(image_path) else "gambar animasi"
-            prompt_text = (
-                f"Ini adalah kolase frame berurutan dari satu {media_label}. "
-                f"Baca frame dari kiri ke kanan lalu atas ke bawah sebagai urutan waktu. "
-                f"Frame yang terlihat berjumlah {animated_frame_count}. "
-                f"Buat deskripsi ringkas namun padat (maks 2-3 kalimat) tentang gerakan utama, perubahan ekspresi/gestur yang benar-benar terlihat, objek utama, dan teks penting jika ada. "
-                f"Jangan menebak emosi tersembunyi, niat, atau cerita jika tidak tampak jelas. Jika ambigu, pakai deskripsi netral. "
-                f"Hindari format field, tulis sebagai satu paragraf singkat dalam bahasa Indonesia.{caption_context}{extra_hint}"
-            )
-        else:
-            prompt_text = (
-                f"Buat deskripsi ringkas namun padat (maks 2-3 kalimat) untuk gambar ini. "
-                f"Fokus pada hal yang benar-benar terlihat: objek utama, warna dominan, teks penting jika ada, ekspresi atau gestur yang jelas, dan suasana visual. "
-                f"Jangan menebak emosi tersembunyi, niat, atau cerita jika tidak tampak jelas. Jika ambigu, pilih deskripsi netral. "
-                f"Hindari format field, tulis sebagai satu paragraf singkat dalam bahasa Indonesia.{caption_context}{extra_hint}"
-            )
-
-        response = chat_handler.call_gemini(
-            model=IMAGE_DESCRIPTION_MODEL,
-            contents=[types.Part(text=prompt_text), image_part],
-            config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=200)
-        )
-
-        if response and response.text:
-            description = response.text.strip()
-            _set_cache_value(chat_handler, sha256_hex, description, image_path)
-            logger.info(f"[IMG-DESC] Generated: {description[:100]}")
-            return description
-
-    except Exception as e:
-        logger.warning(f"[IMG-DESC] Failed, using caption fallback: {e}")
-
-    return user_caption[:200] if user_caption.strip() else "User mengirim sebuah gambar."
+    description = _compose_visual_description(
+        media_label=media_label,
+        user_caption=user_caption,
+        extra_context=extra_context,
+        detail_hint=detail_hint,
+    )
+    _set_cache_value(chat_handler, sha256_hex, description, image_path)
+    return description
 
 
 def _describe_tile(chat_handler, tile_path: str, caption: str, tile_idx: int, total: int) -> str:
-    try:
-        data, mime_type, tile_hash = read_image_bytes(tile_path)
+    _, _, tile_hash = read_image_bytes(tile_path)
+    cache_key = f"tile:{tile_hash}"
+    cached = _get_cache_value(chat_handler, cache_key)
+    if cached:
+        return cached
 
-        cache_key = f"tile:{tile_hash}"
-        cached = _get_cache_value(chat_handler, cache_key)
-        if cached:
-            return cached
-
-        image_part = types.Part.from_bytes(data=data, mime_type=mime_type)
-        prompt = (
-            f"Ini adalah bagian {tile_idx+1} dari {total} potongan sebuah gambar besar. "
-            f"Deskripsikan isi bagian ini secara ringkas (1-2 kalimat) dalam bahasa Indonesia."
-        )
-        response = chat_handler.call_gemini(
-            model=IMAGE_DESCRIPTION_MODEL,
-            contents=[types.Part(text=prompt), image_part],
-            config=types.GenerateContentConfig(temperature=0.1, max_output_tokens=150)
-        )
-        if response and response.text:
-            result = response.text.strip()
-            _set_cache_value(chat_handler, cache_key, result, tile_path)
-            return result
-    except Exception as e:
-        logger.warning(f"[IMG-DESC-TILE] tile {tile_idx} failed: {e}")
-    return f"Bagian {tile_idx+1} dari gambar."
+    result = _compose_visual_description(
+        media_label=f"bagian {tile_idx+1} dari gambar",
+        user_caption=caption,
+        detail_hint=f"Tile {tile_idx+1}/{total}.",
+    )
+    _set_cache_value(chat_handler, cache_key, result, tile_path)
+    return result
 
 
 def _register_group(db, group_id: str, file_hash: str, file_path: str,

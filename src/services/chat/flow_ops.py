@@ -87,7 +87,7 @@ def execute_flow(
         style="default",
         available_tools=getattr(self, "_tool_names", None),
     )
-    workspace_snapshot = build_workspace_snapshot(self.terminal_service.workspace_dir)
+    workspace_snapshot = build_workspace_snapshot(self._workspace_dir)
     full_system = (
         f"{self.get_effective_instruction()}{tool_usage_directive}\n\n"
         f"{system_context}\n\n"
@@ -433,7 +433,7 @@ def trigger_proactive_message(self, context: str) -> Optional[str]:
             "'Reminder:' or '[System]'. Just speak naturally as yourself."
         )
 
-        workspace_snapshot = build_workspace_snapshot(self.terminal_service.workspace_dir)
+        workspace_snapshot = build_workspace_snapshot(self._workspace_dir)
         full_system = (
             f"{self.get_effective_instruction()}{tool_usage_directive}\n\n"
             f"{system_context}\n\n"

@@ -11,11 +11,7 @@ AVAILABLE_CHAT_MODELS = [
 CHAT_MODEL = os.getenv("CHAT_MODEL") or AVAILABLE_CHAT_MODELS[0]
 EMBEDDING_MODEL = "models/gemini-embedding-2-preview"
 PROACTIVE_ANALYSIS_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-IMAGE_DESCRIPTION_MODEL = "models/gemma-3-27b-it"
 BACKGROUND_SUMMARY_MODEL = "models/gemma-3-12b-it"
-FAST_MODEL = "models/gemma-3-2b-it"
-MULTIMODAL_ANALYSIS_MODEL = CHAT_MODEL
-
 
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = str(os.getenv(name, "") or "").strip().lower()
