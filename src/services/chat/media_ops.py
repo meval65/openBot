@@ -6,7 +6,6 @@ import os
 import time
 from typing import Dict, List, Optional
 
-import pytz
 from PIL import Image
 from google.genai import types
 
@@ -19,7 +18,6 @@ from src.config import (
     HISTORY_VISUAL_TOKEN_RATIO,
     INPUT_IMAGE_MEDIA_RESOLUTION,
     STICKER_MEDIA_RESOLUTION,
-    TIMEZONE,
     VISUAL_UNIT_WEIGHT_IMAGE,
     VISUAL_UNIT_WEIGHT_STICKER,
 )
@@ -31,58 +29,16 @@ from src.services.media.pipeline import (
 from src.services.media.video_service import (
     estimate_video_visual_units,
 )
-from src.services.chat.tool_prompt import build_tool_usage_directive
-from src.services.chat.workspace_context import build_workspace_snapshot
+from src.services.chat.media_parts import part_from_bytes_with_resolution
+from src.utils.time_utils import format_human_time
+from src.services.chat import flow_ops
 
 logger = logging.getLogger(__name__)
-
-
-def _to_media_resolution(level: str):
-    key = f"MEDIA_RESOLUTION_{str(level or '').strip().upper()}"
-    return getattr(types.MediaResolution, key, None)
-
-
-def _should_use_media_resolution(model_name: str) -> bool:
-    return "gemini" in str(model_name or "").lower()
-
-
-def _part_from_bytes_with_resolution(data: bytes, mime_type: str, level: str, model_name: str):
-    if not _should_use_media_resolution(model_name):
-        return types.Part.from_bytes(data=data, mime_type=mime_type)
-    resolved = _to_media_resolution(level)
-    if resolved is None:
-        return types.Part.from_bytes(data=data, mime_type=mime_type)
-    try:
-        return types.Part.from_bytes(
-            data=data,
-            mime_type=mime_type,
-            media_resolution=resolved,
-        )
-    except Exception:
-        return types.Part.from_bytes(data=data, mime_type=mime_type)
-
 
 def _visual_units_for_image_path(path: str) -> float:
     if is_sticker_path(path):
         return max(0.1, float(VISUAL_UNIT_WEIGHT_STICKER))
     return max(0.1, float(VISUAL_UNIT_WEIGHT_IMAGE))
-
-
-def _local_tz():
-    try:
-        return pytz.timezone(TIMEZONE)
-    except Exception:
-        return pytz.timezone("Asia/Jakarta")
-
-
-def _format_human_time(dt: datetime.datetime) -> str:
-    tz = _local_tz()
-    if dt.tzinfo is None:
-        dt = tz.localize(dt)
-    local_dt = dt.astimezone(tz)
-    return local_dt.strftime("%Y-%m-%d %H:%M %Z")
-
-
 def _generate_video_sticker_response(
     self,
     user_text: str,
@@ -91,37 +47,24 @@ def _generate_video_sticker_response(
     user_profile_context: Optional[str],
     video_visual_units: float = 1.0,
 ) -> str:
-    session_data = self._gather_session_data()
     schedule_context = self._process_pending_schedule()
-    relevant_memories = self._retrieve_memories(user_text)
-    mood_context = self._extract_mood_context(relevant_memories)
-
-    system_context = self.context_builder.build_context(
-        relevant_memories,
-        session_data["last_interaction"],
-        schedule_context,
-        mood_context=mood_context,
+    prompt_state = flow_ops.build_generation_state(
+        self,
+        query_text=user_text,
+        schedule_context=schedule_context,
         user_profile_context=user_profile_context,
     )
-    rolling_summary = self.session_manager.get_metadata("rolling_summary")
-    if rolling_summary:
-        system_context += f"\n\n[Previous Conversation Summary]\n{rolling_summary}"
-
-    tool_usage_directive = build_tool_usage_directive(
+    session_data = prompt_state["session_data"]
+    full_system = flow_ops.build_full_system_prompt(
+        self,
+        prompt_state["system_context"],
         style="strict",
-        available_tools=getattr(self, "_tool_names", None),
-    )
-    workspace_snapshot = build_workspace_snapshot(self._workspace_dir)
-    full_system = (
-        f"{self.get_effective_instruction()}{tool_usage_directive}\n\n"
-        f"{system_context}\n\n"
-        f"{workspace_snapshot}"
     )
 
     gemini_history = self._build_gemini_history(session_data["history"])
     user_parts = [
         types.Part(text=(user_text or "[Konteks: user mengirim sticker video.]")),
-        _part_from_bytes_with_resolution(
+        part_from_bytes_with_resolution(
             data=video_data,
             mime_type=mime_type,
             level=STICKER_MEDIA_RESOLUTION,
@@ -353,7 +296,7 @@ def build_gemini_history(self, history) -> List[types.Content]:
                     try:
                         level = STICKER_MEDIA_RESOLUTION if is_sticker_path(img_path) else INPUT_IMAGE_MEDIA_RESOLUTION
                         content_parts.append(
-                            _part_from_bytes_with_resolution(
+                            part_from_bytes_with_resolution(
                                 data=data,
                                 mime_type=mime_type,
                                 level=level,
@@ -389,7 +332,7 @@ def build_gemini_history(self, history) -> List[types.Content]:
                         if (used_visual_tokens + est_tokens) <= visual_budget_tokens:
                             level = STICKER_MEDIA_RESOLUTION if is_sticker_path(vid_path) else INPUT_IMAGE_MEDIA_RESOLUTION
                             content_parts.append(
-                                _part_from_bytes_with_resolution(
+                                part_from_bytes_with_resolution(
                                     data=vdata,
                                     mime_type=vmime,
                                     level=level,
@@ -434,12 +377,12 @@ def get_compact_msg_time_tag(msg: Dict) -> str:
             t = int(raw_t)
             if t > 0:
                 dt = datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc)
-                return f"[time:{_format_human_time(dt)}]"
+                return f"[time:{format_human_time(dt)}]"
 
         raw_ts = msg.get("ts")
         if isinstance(raw_ts, str) and raw_ts.strip():
             parsed = datetime.datetime.fromisoformat(raw_ts.strip())
-            return f"[time:{_format_human_time(parsed)}]"
+            return f"[time:{format_human_time(parsed)}]"
     except Exception:
         return ""
     return ""

@@ -20,6 +20,7 @@ from src.services.media.pipeline import (
 )
 from src.services.chat.tool_prompt import build_tool_usage_directive
 from src.services.chat.workspace_context import build_workspace_snapshot
+from src.services.chat.media_parts import part_from_bytes_with_resolution
 
 logger = logging.getLogger(__name__)
 
@@ -27,29 +28,70 @@ BACKGROUND_ANALYSIS_DELAY_SECONDS = 30.0
 BACKGROUND_ANALYSIS_WINDOW = 30
 
 
-def _to_media_resolution(level: str):
-    key = f"MEDIA_RESOLUTION_{str(level or '').strip().upper()}"
-    return getattr(types.MediaResolution, key, None)
-
-
-def _should_use_media_resolution(model_name: str) -> bool:
-    return "gemini" in str(model_name or "").lower()
-
-
-def _part_from_bytes_with_resolution(data: bytes, mime_type: str, level: str, model_name: str):
-    if not _should_use_media_resolution(model_name):
-        return types.Part.from_bytes(data=data, mime_type=mime_type)
-    resolved = _to_media_resolution(level)
-    if resolved is None:
-        return types.Part.from_bytes(data=data, mime_type=mime_type)
+def _stage_media_for_ai_workspace(self, local_path: Optional[str], media_kind: str) -> str:
+    path = str(local_path or "").strip()
+    if not path or not os.path.isfile(path):
+        return ""
     try:
-        return types.Part.from_bytes(
-            data=data,
-            mime_type=mime_type,
-            media_resolution=resolved,
-        )
-    except Exception:
-        return types.Part.from_bytes(data=data, mime_type=mime_type)
+        staged = self.terminal_service.stage_local_file_to_workspace(path, media_kind=media_kind)
+    except Exception as e:
+        logger.warning("[AI-WORKSPACE] Failed staging %s '%s': %s", media_kind, path, e)
+        return ""
+    if not isinstance(staged, dict) or not staged.get("ok"):
+        err = str((staged or {}).get("error") or "unknown")
+        logger.warning("[AI-WORKSPACE] Failed staging %s '%s': %s", media_kind, path, err)
+        return ""
+    return str(staged.get("container_path") or "").strip()
+
+
+def build_generation_state(
+    self,
+    query_text: str,
+    schedule_context: Optional[str],
+    user_profile_context: Optional[str] = None,
+) -> Dict:
+    session_data = self._gather_session_data()
+    relevant_memories = self._retrieve_memories(query_text)
+    mood_context = self._extract_mood_context(relevant_memories)
+
+    system_context = self.context_builder.build_context(
+        relevant_memories,
+        session_data["last_interaction"],
+        schedule_context,
+        mood_context=mood_context,
+        user_profile_context=user_profile_context,
+    )
+
+    rolling_summary = self.session_manager.get_metadata("rolling_summary")
+    if rolling_summary:
+        system_context += f"\n\n[Previous Conversation Summary]\n{rolling_summary}"
+
+    return {
+        "session_data": session_data,
+        "relevant_memories": relevant_memories,
+        "mood_context": mood_context,
+        "system_context": system_context,
+    }
+
+
+def build_full_system_prompt(
+    self,
+    system_context: str,
+    style: str = "default",
+    extra_instruction: str = "",
+) -> str:
+    tool_usage_directive = build_tool_usage_directive(
+        style=style,
+        available_tools=getattr(self, "_tool_names", None),
+    )
+    workspace_snapshot = build_workspace_snapshot(self._workspace_dir)
+    extra = str(extra_instruction or "")
+    return (
+        f"{self.get_effective_instruction()}{tool_usage_directive}\n\n"
+        f"{system_context}\n\n"
+        f"{workspace_snapshot}"
+        f"{extra}"
+    )
 
 
 def execute_flow(
@@ -66,33 +108,17 @@ def execute_flow(
     stage_marks["session"] = time.perf_counter()
     schedule_context = self._process_pending_schedule()
     stage_marks["schedule"] = time.perf_counter()
-    relevant_memories = self._retrieve_memories(user_text)
-    stage_marks["memory"] = time.perf_counter()
-    mood_context = self._extract_mood_context(relevant_memories)
-
-    system_context = self.context_builder.build_context(
-        relevant_memories,
-        session_data["last_interaction"],
-        schedule_context,
-        mood_context=mood_context,
+    prompt_state = build_generation_state(
+        self,
+        query_text=user_text,
+        schedule_context=schedule_context,
         user_profile_context=user_profile_context,
     )
+    relevant_memories = prompt_state["relevant_memories"]
+    system_context = prompt_state["system_context"]
     stage_marks["context"] = time.perf_counter()
-
-    rolling_summary = self.session_manager.get_metadata("rolling_summary")
-    if rolling_summary:
-        system_context += f"\n\n[Previous Conversation Summary]\n{rolling_summary}"
-
-    tool_usage_directive = build_tool_usage_directive(
-        style="default",
-        available_tools=getattr(self, "_tool_names", None),
-    )
-    workspace_snapshot = build_workspace_snapshot(self._workspace_dir)
-    full_system = (
-        f"{self.get_effective_instruction()}{tool_usage_directive}\n\n"
-        f"{system_context}\n\n"
-        f"{workspace_snapshot}"
-    )
+    stage_marks["memory"] = stage_marks["context"]
+    full_system = build_full_system_prompt(self, system_context, style="default")
 
     permanent_image_path = None
     primary_image_part: Optional[types.Part] = None
@@ -108,7 +134,7 @@ def execute_flow(
             used_collage = bool(image_ctx["used_collage"])
             frame_count = int(image_ctx["frame_count"] or 0)
             image_level = image_ctx["media_resolution"]
-            primary_image_part = _part_from_bytes_with_resolution(
+            primary_image_part = part_from_bytes_with_resolution(
                 data=data,
                 mime_type=mime_type,
                 level=image_level,
@@ -138,6 +164,8 @@ def execute_flow(
 
     history_image_path = permanent_image_path if (permanent_image_path and not is_sticker_path(permanent_image_path)) else None
     history_video_path = permanent_video_path if (permanent_video_path and not is_sticker_path(permanent_video_path)) else None
+    workspace_image_path = _stage_media_for_ai_workspace(self, history_image_path, "image") if history_image_path else ""
+    workspace_video_path = _stage_media_for_ai_workspace(self, history_video_path, "video") if history_video_path else ""
 
     combined_text = user_text or ""
     media_path_lines: List[str] = []
@@ -145,6 +173,16 @@ def execute_flow(
         media_path_lines.append(f"[IMG_PATH] {history_image_path}")
     if history_video_path:
         media_path_lines.append(f"[VID_PATH] {history_video_path}")
+    if workspace_image_path:
+        media_path_lines.append(
+            f"[AI_WORKSPACE_IMAGE] {workspace_image_path}\n"
+            "File gambar yang sudah dinormalisasi ini tersedia di komputer pribadimu dan boleh kamu akses langsung via terminal/tool."
+        )
+    if workspace_video_path:
+        media_path_lines.append(
+            f"[AI_WORKSPACE_VIDEO] {workspace_video_path}\n"
+            "File video yang sudah dinormalisasi ini tersedia di komputer pribadimu dan boleh kamu akses langsung via terminal/tool."
+        )
     if media_path_lines:
         path_block = "\n".join(media_path_lines)
         if combined_text:
@@ -406,39 +444,26 @@ def trigger_proactive_message(self, context: str) -> Optional[str]:
         return None
     try:
         self._last_proactive_failure_reason = ""
-        session_data = self._gather_session_data()
-        relevant_memories = self._retrieve_memories(context)
-        mood_context = self._extract_mood_context(relevant_memories)
-
-        system_context = self.context_builder.build_context(
-            relevant_memories,
-            session_data["last_interaction"],
-            None,
-            mood_context=mood_context,
+        prompt_state = build_generation_state(
+            self,
+            query_text=context,
+            schedule_context=None,
             user_profile_context=self.session_manager.get_metadata("user_profile_context", ""),
         )
+        session_data = prompt_state["session_data"]
+        system_context = prompt_state["system_context"]
 
-        rolling_summary = self.session_manager.get_metadata("rolling_summary")
-        if rolling_summary:
-            system_context += f"\n\n[Previous Conversation Summary]\n{rolling_summary}"
-
-        tool_usage_directive = build_tool_usage_directive(
-            style="default",
-            available_tools=getattr(self, "_tool_names", None),
-        )
         proactive_instruction = (
             "\n\n[PROACTIVE TRIGGER]\n"
             "You are initiating this message yourself based on a scheduled reminder.\n"
             "Deliver the reminder naturally and in character. Do NOT start with phrases like "
             "'Reminder:' or '[System]'. Just speak naturally as yourself."
         )
-
-        workspace_snapshot = build_workspace_snapshot(self._workspace_dir)
-        full_system = (
-            f"{self.get_effective_instruction()}{tool_usage_directive}\n\n"
-            f"{system_context}\n\n"
-            f"{workspace_snapshot}"
-            f"{proactive_instruction}"
+        full_system = build_full_system_prompt(
+            self,
+            system_context,
+            style="default",
+            extra_instruction=proactive_instruction,
         )
         gemini_history = self._build_gemini_history(session_data["history"])
         user_parts = [types.Part(text=f"[Scheduled Reminder] {context}")]

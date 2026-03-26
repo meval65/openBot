@@ -1,10 +1,8 @@
 import logging
-import datetime
-import pytz
 from typing import Dict, List, Optional
 
-from src.config import TIMEZONE, MAX_MEMORIES_DISPLAY
-from src.utils.time_utils import get_local_tz, now_local, format_human_time
+from src.config import MAX_MEMORIES_DISPLAY
+from src.utils.time_utils import get_local_tz, now_local, to_local_aware
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +83,9 @@ class ContextBuilder:
 
         if last_interaction:
             try:
-                if isinstance(last_interaction, str):
-                    last_dt = datetime.datetime.fromisoformat(last_interaction)
-                    if last_dt.tzinfo is None:
-                        last_dt = get_local_tz().localize(last_dt)
-                else:
-                    last_dt = last_interaction
+                last_dt = to_local_aware(last_interaction)
+                if last_dt is None:
+                    raise ValueError("invalid last_interaction")
                 delta = local_now - last_dt.astimezone(get_local_tz())
                 hours = int(delta.total_seconds() / 3600)
                 if hours < 1:

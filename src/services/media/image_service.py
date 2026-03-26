@@ -6,7 +6,6 @@ import logging
 import json
 import threading
 import io
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict
 import re
 
@@ -36,21 +35,6 @@ TILING_RATIO_THRESHOLD = 2.5
 TILING_SHORT_SIDE_THRESHOLD = 1024
 _MEDIA_CACHE_LOCK = threading.RLock()
 _STICKER_ID_RE = re.compile(r"^sticker_([A-Za-z0-9_-]{8,})", re.IGNORECASE)
-
-
-def _has_vector_payload(vector) -> bool:
-    if vector is None:
-        return False
-    if hasattr(vector, "size"):
-        try:
-            return int(vector.size) > 0
-        except Exception:
-            pass
-    if isinstance(vector, (list, tuple)):
-        return len(vector) > 0
-    return True
-
-
 def _get_cache_value(chat_handler, key: str):
     try:
         row = catalog.get_image_description(key)
@@ -608,114 +592,3 @@ def _register_group(db, group_id: str, file_hash: str, file_path: str,
     except Exception as e:
         logger.error(f"[IMG-GROUP] Failed to register group: {e}")
         return group_id
-
-
-def store_image_embedding(chat_handler, analyzer, memory_manager, image_path: str, caption: str, media_type: str = "image"):
-    logger.info("[IMAGE-EMBED] Dinonaktifkan: multimodal embedding telah dihapus.")
-    return
-
-
-def _process_single(chat_handler, analyzer, memory_manager, image_path: str,
-                    img: PIL.Image.Image, caption: str, media_type: str, orig_w: int, orig_h: int):
-    needs_scale = _needs_downscale(orig_w, orig_h)
-    if needs_scale:
-        img_proc = _downscale_image(img.copy())
-        img_proc.convert("RGB").save(image_path, format="JPEG", quality=85, optimize=True)
-        img_proc.close()
-    else:
-        img_proc = img.copy()
-
-    final_w, final_h = img_proc.size
-    
-    # Read the NEW file_hash potentially updated by downscaling
-    _, _, file_hash = read_image_bytes(image_path)
-    group_id = str(uuid.uuid4())
-
-    desc_result = {}
-    embed_result = {}
-
-    def do_desc():
-        desc_result["v"] = generate_image_description(chat_handler, image_path, caption)
-
-    def do_embed():
-        embed_result["v"] = analyzer.get_embedding(image_path, content_type="image")
-
-    t1 = threading.Thread(target=do_desc)
-    t2 = threading.Thread(target=do_embed)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
-
-    description = desc_result.get("v", caption or "User mengirim sebuah gambar.")
-    embedding = embed_result.get("v", [])
-
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d")
-    summary = f"[{timestamp}] [IMG_PATH:{image_path}] {description}"
-
-    actual_group_id = _register_group(
-        chat_handler.cache_db, group_id, file_hash, image_path,
-        media_type, description, 1, final_w, final_h, orig_w, orig_h
-    )
-
-    if _has_vector_payload(embedding):
-        memory_manager.add_memory_with_group(
-            summary=summary, m_type="general", priority=0.5,
-            embedding=embedding, group_id=actual_group_id, embedding_namespace="image"
-        )
-        logger.info(f"[IMAGE-EMBED] Single stored: {summary[:80]}")
-
-
-def _process_tiled(chat_handler, analyzer, memory_manager, image_path: str,
-                   img: PIL.Image.Image, caption: str, media_type: str, orig_w: int, orig_h: int):
-    _, _, file_hash = read_image_bytes(image_path)
-    group_id = str(uuid.uuid4())
-
-    tiles = _slice_into_tiles(img)
-    tile_paths = []
-    for i, tile in enumerate(tiles):
-        tile_path = _save_tile(tile, IMAGE_STORE_DIR, file_hash, i)
-        tile_paths.append(tile_path)
-
-    tile_descs = [None] * len(tile_paths)
-    with ThreadPoolExecutor(max_workers=min(4, len(tile_paths))) as pool:
-        desc_futures = {
-            pool.submit(_describe_tile, chat_handler, tp, caption, i, len(tile_paths)): i
-            for i, tp in enumerate(tile_paths)
-        }
-        embed_future = pool.submit(analyzer.get_embeddings_batch, tile_paths)
-        for f in as_completed(desc_futures):
-            idx = desc_futures[f]
-            try:
-                tile_descs[idx] = f.result()
-            except Exception:
-                tile_descs[idx] = f"Bagian {idx+1} dari gambar."
-        tile_vectors = embed_future.result()
-
-    full_description = " | ".join(d for d in tile_descs if d)
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d")
-
-    actual_group_id = _register_group(
-        chat_handler.cache_db, group_id, file_hash, image_path,
-        media_type, full_description, len(tile_paths),
-        orig_w, orig_h, orig_w, orig_h
-    )
-
-    for i, (tile_path, tile_vec, tile_desc) in enumerate(zip(tile_paths, tile_vectors, tile_descs)):
-        if not _has_vector_payload(tile_vec):
-            continue
-        summary = f"[{timestamp}] [IMG_PATH:{image_path}] [Tile {i+1}/{len(tile_paths)}] {tile_desc}"
-        memory_manager.add_memory_with_group(
-            summary=summary,
-            m_type="general",
-            priority=0.5,
-            embedding=tile_vec,
-            group_id=actual_group_id,
-            embedding_namespace="image",
-        )
-
-    for tp in tile_paths:
-        try:
-            os.remove(tp)
-        except OSError:
-            pass
-
-    logger.info(f"[IMAGE-EMBED] Tiled stored: {len(tile_paths)} tiles for group {group_id}")

@@ -2,11 +2,37 @@ import sqlite3
 import os
 import logging
 import threading
+from datetime import date, datetime
 from typing import List, Optional
 from src.config import DB_PATH
 from src.database.schema import create_tables, create_indexes, migrate_schema
 
 logger = logging.getLogger(__name__)
+
+
+def _adapt_date(value: date) -> str:
+    return value.isoformat()
+
+
+def _adapt_datetime(value: datetime) -> str:
+    return value.isoformat(sep=" ")
+
+
+def _convert_date(raw: bytes) -> date:
+    return date.fromisoformat(raw.decode("utf-8"))
+
+
+def _convert_timestamp(raw: bytes) -> datetime:
+    text = raw.decode("utf-8")
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    return datetime.fromisoformat(text)
+
+
+sqlite3.register_adapter(date, _adapt_date)
+sqlite3.register_adapter(datetime, _adapt_datetime)
+sqlite3.register_converter("DATE", _convert_date)
+sqlite3.register_converter("TIMESTAMP", _convert_timestamp)
 
 
 class DBConnection:

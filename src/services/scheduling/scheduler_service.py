@@ -222,36 +222,29 @@ class SchedulerService:
                 logger.error(f"[SCHEDULER] cancel_schedule failed: {e}")
                 return False
 
-
-
-    def get_due_schedules(self, max_results: int = 20) -> List[Dict]:
-        # Fetch all overdue pending schedules (<= now) so failed deliveries can retry.
+    def get_schedule_by_id(self, schedule_id: int) -> Optional[Dict]:
         with self._lock:
-            cursor = self.db.get_cursor()
-            now = self._get_now()
-            stale_before = now - timedelta(seconds=self.CLAIM_STALE_SECONDS)
-            cursor.execute("""
-                SELECT id, CAST(scheduled_at AS TEXT), context, priority
-                FROM schedules
-                WHERE status = 'pending' AND scheduled_at <= ?
-                  AND (
-                    execution_note IS NULL OR execution_note = ''
-                    OR execution_note NOT LIKE ?
-                    OR (execution_note LIKE ? AND (executed_at IS NULL OR executed_at <= ?))
-                  )
-                ORDER BY priority DESC, scheduled_at ASC
-                LIMIT ?
-            """, (now, self._claim_like(), self._claim_like(), stale_before, max_results))
-            
-            return [
-                {
-                    "id": row[0], 
+            try:
+                cursor = self.db.get_cursor()
+                cursor.execute("""
+                    SELECT id, CAST(scheduled_at AS TEXT), context, priority, status
+                    FROM schedules
+                    WHERE id = ?
+                    LIMIT 1
+                """, (schedule_id,))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row[0],
                     "scheduled_at": row[1],
-                    "context": row[2], 
-                    "priority": row[3]
+                    "context": row[2],
+                    "priority": row[3],
+                    "status": row[4],
                 }
-                for row in cursor.fetchall()
-            ]
+            except Exception as e:
+                logger.error(f"[SCHEDULER] get_schedule_by_id failed: {e}")
+                return None
 
     def get_pending_schedules(
         self,
@@ -302,25 +295,6 @@ class SchedulerService:
                 }
                 for row in cursor.fetchall()
             ]
-
-
-    def mark_as_executed(self, schedule_id: int, note: Optional[str] = None) -> bool:
-        with self._lock:
-            cursor = self.db.get_cursor()
-            try:
-                cursor.execute("""
-                    UPDATE schedules 
-                    SET status='executed', executed_at=?, execution_note=?
-                    WHERE id=? AND status='pending'
-                """, (self._get_now(), note, schedule_id))
-                success = cursor.rowcount > 0
-                if success:
-                    self.db.commit()
-                return success
-            except Exception as e:
-                logger.error(f"[SCHEDULER] Mark executed failed: {e}")
-                return False
-
     def claim_pending_schedules(
         self,
         lookahead_minutes: int = 0,

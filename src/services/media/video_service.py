@@ -413,13 +413,6 @@ def prepare_video_for_chat(db, src_path: str) -> str:
 
     _upsert_video_cache(db, cache_key, final_path, final_mime)
     return final_path
-
-
-def store_video_embedding(chat_handler, analyzer, memory_manager, video_path: str, caption: str):
-    logger.info("[VIDEO-EMBED] Dinonaktifkan: multimodal embedding telah dihapus.")
-    return
-
-
 def generate_video_description(chat_handler, video_path: str, user_caption: str, extra_context: str = "") -> str:
     _, _, video_hash = read_video_bytes(video_path)
     cached_desc = catalog.get_video_description(video_hash)

@@ -385,8 +385,15 @@ def build_python_tools(self) -> list:
             )
             if not schedule_id:
                 return "Reminder tidak dibuat. Mungkin duplikat, waktunya sudah lewat, atau input tidak valid."
+            stored = self.scheduler_service.get_schedule_by_id(int(schedule_id))
+            stored_context = clean_context
             pretty_time = trigger_time.strftime("%Y-%m-%d %H:%M")
-            return f"Reminder berhasil dibuat. id={schedule_id}, waktu_local={pretty_time}, konteks={clean_context}"
+            if isinstance(stored, dict):
+                stored_context = " ".join(str(stored.get("context") or clean_context).split()).strip() or clean_context
+                stored_dt = _parse_schedule_datetime(str(stored.get("scheduled_at") or ""))
+                if stored_dt is not None:
+                    pretty_time = stored_dt.strftime("%Y-%m-%d %H:%M")
+            return f"Reminder berhasil dibuat. id={schedule_id}, waktu_local={pretty_time}, konteks={stored_context}"
         except Exception as e:
             logger.error(f"[TOOL create_schedule] Failed: {e}")
             return f"Gagal membuat reminder: {e}"
@@ -557,7 +564,7 @@ def build_python_tools(self) -> list:
                 return "Gagal membaca daftar reminder: `datetime_iso` tidak valid."
             pending = self.scheduler_service.get_pending_schedules(
                 lookahead_minutes=60 * 24 * 365,
-                include_overdue=False,
+                include_overdue=True,
             )
             filtered = []
             for item in pending:

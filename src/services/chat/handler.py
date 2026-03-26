@@ -291,10 +291,6 @@ class ChatHandler:
     def _rotate_api_key(self) -> bool:
         return generation_ops.rotate_api_key(self)
 
-    @staticmethod
-    def _is_high_demand_error(error_msg: str) -> bool:
-        return generation_ops.is_high_demand_error(error_msg)
-
     def _get_model_penalty_remaining(self, model_name: str) -> float:
         return generation_ops.get_model_penalty_remaining(self, model_name)
 
@@ -366,6 +362,32 @@ class ChatHandler:
 
     def _gather_session_data(self) -> Dict:
         return flow_ops.gather_session_data(self)
+
+    def _build_generation_state(
+        self,
+        query_text: str,
+        schedule_context: Optional[str],
+        user_profile_context: Optional[str] = None,
+    ) -> Dict:
+        return flow_ops.build_generation_state(
+            self,
+            query_text=query_text,
+            schedule_context=schedule_context,
+            user_profile_context=user_profile_context,
+        )
+
+    def _build_full_system_prompt(
+        self,
+        system_context: str,
+        style: str = "default",
+        extra_instruction: str = "",
+    ) -> str:
+        return flow_ops.build_full_system_prompt(
+            self,
+            system_context=system_context,
+            style=style,
+            extra_instruction=extra_instruction,
+        )
 
     def _process_pending_schedule(self) -> Optional[str]:
         return flow_ops.process_pending_schedule(self)

@@ -1,21 +1,23 @@
 import asyncio
-import io
 import logging
 import os
 import psutil
 import threading
 import time
 import tracemalloc
-from datetime import datetime
 
-from telegram import InputFile, InputMediaPhoto
-from telegram.constants import ParseMode
-from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from src.config import ADMIN_TELEGRAM_ID, PROACTIVE_MIN_SEND_GAP_SECONDS, TEMP_DIR
+from src.handlers.outbound_delivery import (
+    flush_outbound_messages,
+    safe_send_text,
+    send_outbound_files_with_caption,
+    send_outbound_media_with_caption,
+)
 from src.services.analysis import ProactiveEngine
-from src.services.chat.context import get_local_tz, now_local
+from src.services.chat.context import now_local
+from src.utils.time_utils import to_local_aware
 
 logger = logging.getLogger(__name__)
 
@@ -23,27 +25,9 @@ logger = logging.getLogger(__name__)
 _proactive_engine = ProactiveEngine()
 _PROCESS_STARTED_AT = time.time()
 _SCHEDULE_CHECK_LOCK = threading.Lock()
-TELEGRAM_CAPTION_LIMIT = 1024
-
-
-def _parse_local_datetime(value):
-    if not value:
-        return None
-    try:
-        if isinstance(value, str):
-            dt = datetime.fromisoformat(value)
-        else:
-            dt = value
-        if dt.tzinfo is None:
-            dt = get_local_tz().localize(dt)
-        return dt.astimezone(get_local_tz())
-    except Exception:
-        return None
-
-
 def _in_proactive_cooldown(chat_handler) -> bool:
     last_sent = chat_handler.session_manager.get_metadata("last_proactive_sent_ts")
-    last_sent_dt = _parse_local_datetime(last_sent)
+    last_sent_dt = to_local_aware(last_sent)
     if not last_sent_dt:
         return False
     delta_seconds = (now_local() - last_sent_dt).total_seconds()
@@ -56,169 +40,16 @@ def _in_proactive_cooldown(chat_handler) -> bool:
     return False
 
 
-async def _flush_proactive_outbound_messages(bot, chat_id: int, chat_handler) -> int:
-    try:
-        outbound_messages = chat_handler.pop_pending_outbound_messages()
-    except Exception:
-        outbound_messages = []
-
-    sent_count = 0
-    for text in outbound_messages:
-        clean = " ".join(str(text or "").split()).strip()
-        if not clean:
-            continue
-        await _safe_proactive_send_text(bot, chat_id, clean)
-        sent_count += 1
-    return sent_count
-
-
 async def _safe_proactive_send_text(bot, chat_id: int, text: str):
-    clean = " ".join(str(text or "").split()).strip()
-    if not clean:
-        return
-    try:
-        await bot.send_message(chat_id=chat_id, text=clean, parse_mode=ParseMode.HTML)
-    except TelegramError:
-        await bot.send_message(chat_id=chat_id, text=clean)
-
-
-async def _send_proactive_outbound_media_with_caption(bot, chat_id: int, media_items: list, text: str):
-    if not chat_id or not media_items:
-        if text:
-            await _safe_proactive_send_text(bot, chat_id, text)
-        return False, []
-
-    safe_text = str(text or "").strip()
-    caption = safe_text[:TELEGRAM_CAPTION_LIMIT]
-    remain = safe_text[TELEGRAM_CAPTION_LIMIT:].strip() if safe_text else ""
-
-    prepared = []
-    image_paths = []
-    for idx, item in enumerate(media_items[:5]):
-        if not isinstance(item, dict):
-            continue
-        data = item.get("data")
-        if not isinstance(data, (bytes, bytearray)) or not data:
-            continue
-        mime = str(item.get("mime_type") or "image/jpeg").strip().lower()
-        ext = ".png" if "png" in mime else ".jpg"
-        bio = io.BytesIO(bytes(data))
-        bio.name = f"proactive_{idx + 1}{ext}"
-        prepared.append(bio)
-        path = str(item.get("path") or "").strip()
-        if path:
-            image_paths.append(path)
-
-    if not prepared:
-        return False, []
-
-    if len(prepared) == 1:
-        try:
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=prepared[0],
-                caption=caption or None,
-                parse_mode=ParseMode.HTML if caption else None,
-            )
-        except TelegramError:
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=prepared[0],
-                caption=caption or None,
-            )
-    else:
-        media = [
-            InputMediaPhoto(
-                media=bio,
-                caption=caption if idx == 0 and caption else None,
-                parse_mode=ParseMode.HTML if idx == 0 and caption else None,
-            )
-            for idx, bio in enumerate(prepared)
-        ]
-        try:
-            await bot.send_media_group(chat_id=chat_id, media=media)
-        except TelegramError:
-            plain_media = [
-                InputMediaPhoto(media=bio, caption=caption if idx == 0 and caption else None)
-                for idx, bio in enumerate(prepared)
-            ]
-            await bot.send_media_group(chat_id=chat_id, media=plain_media)
-
-    if remain:
-        await _safe_proactive_send_text(bot, chat_id, remain)
-    return True, image_paths
-
-
-async def _send_proactive_outbound_files_with_caption(bot, chat_id: int, file_items: list, text: str) -> bool:
-    if not chat_id or not file_items:
-        return False
-
-    safe_text = str(text or "").strip()
-    caption = safe_text[:TELEGRAM_CAPTION_LIMIT]
-    remain = safe_text[TELEGRAM_CAPTION_LIMIT:].strip() if safe_text else ""
-
-    prepared = []
-    for item in file_items[:5]:
-        if not isinstance(item, dict):
-            continue
-        path = str(item.get("path") or "").strip()
-        if not path or not os.path.isfile(path):
-            continue
-        prepared.append(
-            {
-                "path": path,
-                "filename": str(item.get("filename") or "").strip() or os.path.basename(path),
-                "caption": " ".join(str(item.get("caption") or "").split()).strip(),
-                "cleanup_after_send": bool(item.get("cleanup_after_send")),
-            }
-        )
-
-    if not prepared:
-        return False
-
-    sent_count = 0
-    for idx, item in enumerate(prepared):
-        try:
-            with open(item["path"], "rb") as fp:
-                doc = InputFile(fp, filename=item["filename"])
-                this_caption = (caption or item["caption"]) if idx == 0 else None
-                try:
-                    await bot.send_document(
-                        chat_id=chat_id,
-                        document=doc,
-                        caption=this_caption,
-                        parse_mode=ParseMode.HTML if this_caption else None,
-                    )
-                    sent_count += 1
-                except TelegramError:
-                    fp.seek(0)
-                    doc_plain = InputFile(fp, filename=item["filename"])
-                    await bot.send_document(
-                        chat_id=chat_id,
-                        document=doc_plain,
-                        caption=this_caption,
-                    )
-                    sent_count += 1
-        except Exception as e:
-            logger.error(f"Failed sending proactive outbound file '{item.get('path')}': {e}")
-        finally:
-            if bool(item.get("cleanup_after_send")):
-                try:
-                    if os.path.isfile(item["path"]):
-                        os.remove(item["path"])
-                except Exception:
-                    pass
-
-    if sent_count <= 0:
-        return False
-
-    if remain:
-        await _safe_proactive_send_text(bot, chat_id, remain)
-    return True
+    await safe_send_text(
+        text,
+        send_html=lambda clean: bot.send_message(chat_id=chat_id, text=clean, parse_mode="HTML"),
+        send_plain=lambda clean: bot.send_message(chat_id=chat_id, text=clean),
+    )
 
 
 async def _deliver_proactive_text_and_outbound(bot, chat_id: int, chat_handler, final_text: str) -> bool:
-    await _flush_proactive_outbound_messages(bot, chat_id, chat_handler)
+    await flush_outbound_messages(chat_handler, lambda text: _safe_proactive_send_text(bot, chat_id, text))
 
     try:
         outbound_media = chat_handler.pop_pending_outbound_media()
@@ -232,11 +63,13 @@ async def _deliver_proactive_text_and_outbound(bot, chat_id: int, chat_handler, 
     delivered_any = False
     remaining_text = str(final_text or "").strip()
     if outbound_media:
-        sent_ok, sent_paths = await _send_proactive_outbound_media_with_caption(
-            bot,
-            chat_id,
+        sent_ok, sent_paths = await send_outbound_media_with_caption(
             outbound_media,
             remaining_text,
+            send_photo=lambda **kwargs: bot.send_photo(chat_id=chat_id, **kwargs),
+            send_media_group=lambda **kwargs: bot.send_media_group(chat_id=chat_id, **kwargs),
+            send_text=lambda text: _safe_proactive_send_text(bot, chat_id, text),
+            file_prefix="proactive",
         )
         if sent_ok:
             delivered_any = True
@@ -246,11 +79,13 @@ async def _deliver_proactive_text_and_outbound(bot, chat_id: int, chat_handler, 
             except Exception as meta_err:
                 logger.warning(f"Failed to persist proactive image paths: {meta_err}")
     if outbound_files:
-        sent_ok = await _send_proactive_outbound_files_with_caption(
-            bot,
-            chat_id,
+        sent_ok = await send_outbound_files_with_caption(
             outbound_files,
             remaining_text,
+            send_document=lambda **kwargs: bot.send_document(chat_id=chat_id, **kwargs),
+            send_text=lambda text: _safe_proactive_send_text(bot, chat_id, text),
+            logger=logger,
+            log_prefix="proactive outbound",
         )
         if sent_ok:
             delivered_any = True
@@ -373,7 +208,7 @@ async def background_schedule_checker(context: ContextTypes.DEFAULT_TYPE):
         last_interaction = chat_handler.session_manager.get_metadata("last_user_interaction")
         if last_interaction:
             try:
-                last_dt = _parse_local_datetime(last_interaction)
+                last_dt = to_local_aware(last_interaction)
                 if not last_dt:
                     raise ValueError("invalid last_interaction")
                 delta_seconds = (now_local() - last_dt).total_seconds()

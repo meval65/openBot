@@ -5,6 +5,8 @@ import subprocess
 import threading
 import time
 import uuid
+import hashlib
+import shutil
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -49,21 +51,6 @@ class DockerTerminalService:
             cleaned = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "-" for ch in cleaned)
             cleaned = _re_sub_multi_dash(cleaned).strip("-_") or "bot"
         return cleaned
-
-    @classmethod
-    def from_bot_dict(cls, bot: dict):
-        bot_id = str(bot.get("id") or bot.get("name") or "bot").strip() or "bot"
-        runtime_dir = str(bot.get("runtime_dir") or "").strip()
-        storage_dir = str(bot.get("storage_dir") or "").strip() or "."
-        docker_image = str(bot.get("docker_image") or DOCKER_COMPUTER_IMAGE).strip() or DOCKER_COMPUTER_IMAGE
-        memory_limit = str(bot.get("docker_memory_limit") or DOCKER_COMPUTER_MEMORY_LIMIT).strip() or DOCKER_COMPUTER_MEMORY_LIMIT
-        return cls(
-            bot_id=bot_id,
-            runtime_dir=runtime_dir,
-            storage_dir=storage_dir,
-            docker_image=docker_image,
-            memory_limit=memory_limit,
-        )
 
     def get_sandbox_status(self) -> tuple[bool, str]:
         if not _docker_available():
@@ -166,30 +153,6 @@ class DockerTerminalService:
         self._append_history(result)
         return result
 
-    def read_history(self, limit: int = 60) -> List[Dict]:
-        max_items = max(1, min(500, int(limit or 60)))
-        if not os.path.exists(self.history_path):
-            return []
-        try:
-            with self._io_lock:
-                with open(self.history_path, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()[-max_items:]
-            rows = []
-            for raw in lines:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    row = json.loads(raw)
-                    if isinstance(row, dict):
-                        rows.append(row)
-                except Exception:
-                    continue
-            rows.reverse()
-            return rows
-        except Exception:
-            return []
-
     def resolve_file_for_telegram(self, file_path: str, max_bytes: int, default_cwd: str = "") -> Dict:
         raw = str(file_path or "").strip()
         if not raw:
@@ -239,6 +202,43 @@ class DockerTerminalService:
             "filename": basename,
             "size": size,
             "cleanup": True,
+        }
+
+    def stage_local_file_to_workspace(self, local_path: str, media_kind: str = "file") -> Dict:
+        source_path = os.path.abspath(str(local_path or "").strip())
+        if not source_path or not os.path.isfile(source_path):
+            return {"ok": False, "error": "file lokal tidak ditemukan"}
+
+        kind = str(media_kind or "file").strip().lower()
+        if kind not in {"image", "video", "file"}:
+            kind = "file"
+
+        subdir = {
+            "image": "images",
+            "video": "videos",
+            "file": "files",
+        }[kind]
+        ext = os.path.splitext(source_path)[1].lower() or ""
+        digest = _sha256_file(source_path)
+        if not digest:
+            return {"ok": False, "error": "gagal menghitung hash file"}
+
+        rel_path = posixpath.join("inbox", "media", subdir, f"{digest}{ext}")
+        host_path = os.path.join(self.workspace_dir, *rel_path.split("/"))
+        os.makedirs(os.path.dirname(host_path), exist_ok=True)
+
+        try:
+            if not os.path.isfile(host_path):
+                shutil.copy2(source_path, host_path)
+        except Exception as e:
+            return {"ok": False, "error": f"gagal menyalin file ke workspace: {e}"}
+
+        return {
+            "ok": True,
+            "host_path": host_path,
+            "container_path": posixpath.join(self.container_workspace, rel_path),
+            "relative_path": rel_path,
+            "filename": os.path.basename(host_path),
         }
 
     def _ensure_container(self):
@@ -458,3 +458,16 @@ def _normalize_image_ref(image: str) -> str:
     if ":" not in raw and "@sha256:" not in raw:
         return f"{raw}:latest"
     return raw
+
+
+def _sha256_file(path: str) -> str:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""

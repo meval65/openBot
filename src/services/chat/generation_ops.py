@@ -230,16 +230,6 @@ def rotate_api_key(self) -> bool:
         return False
 
 
-def is_high_demand_error(error_msg: str) -> bool:
-    msg = (error_msg or "").lower()
-    return (
-        ("503" in msg and "unavailable" in msg)
-        or "high demand" in msg
-        or "overloaded" in msg
-        or "model is currently experiencing high demand" in msg
-    )
-
-
 def get_model_penalty_remaining(self, model_name: str) -> float:
     with self._model_penalty_lock:
         until = self._model_penalty_until.get(model_name, 0.0)

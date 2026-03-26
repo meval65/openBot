@@ -41,3 +41,19 @@ def parse_local_dt(dt_str: str) -> Optional[datetime.datetime]:
         return to_naive(dt)
     except ValueError:
         return None
+
+
+def to_local_aware(dt_value) -> Optional[datetime.datetime]:
+    """Coerce string/datetime input into a timezone-aware local datetime."""
+    if not dt_value:
+        return None
+    try:
+        dt = dt_value if isinstance(dt_value, datetime.datetime) else parse_local_dt(str(dt_value))
+        if dt is None:
+            return None
+        tz = get_local_tz()
+        if dt.tzinfo is None:
+            dt = tz.localize(dt)
+        return dt.astimezone(tz)
+    except Exception:
+        return None

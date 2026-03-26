@@ -3,17 +3,21 @@ import asyncio
 import uuid
 import logging
 import contextlib
-import io
 from typing import Optional
 
 from PIL import Image
-from telegram import Update, Message, InputMediaPhoto, InputFile
-from telegram.constants import ChatAction, ParseMode
+from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
-from telegram.error import TelegramError
 
 from src.utils import send_chunked_response, USER_LOCK
 from src.handlers.media_group_cache import register_media_group_message
+from src.handlers.outbound_delivery import (
+    flush_outbound_messages,
+    safe_send_text,
+    send_outbound_files_with_caption,
+    send_outbound_media_with_caption,
+)
 from src.handlers.sticker_command import cmd_sticker
 
 from src.config import (
@@ -27,49 +31,6 @@ from src.config import (
 )
 
 logger = logging.getLogger(__name__)
-TELEGRAM_CAPTION_LIMIT = 1024
-
-
-def _is_not_modified_error(error: Exception) -> bool:
-    return "message is not modified" in str(error or "").lower()
-
-
-async def _safe_edit_message(message: Message, text: str) -> bool:
-    try:
-        await message.edit_text(text, parse_mode=ParseMode.HTML)
-        return True
-    except TelegramError as e:
-        if _is_not_modified_error(e):
-            return True
-        try:
-            await message.edit_text(text, parse_mode=None)
-            return True
-        except TelegramError as e2:
-            if _is_not_modified_error(e2):
-                return True
-            return False
-
-
-async def _safe_reply_markdown(update: Update, text: str):
-    try:
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-    except TelegramError:
-        await update.message.reply_text(text, parse_mode=None)
-
-
-async def _flush_outbound_messages(update: Update, chat_handler) -> bool:
-    try:
-        outbound_messages = chat_handler.pop_pending_outbound_messages()
-    except Exception:
-        outbound_messages = []
-    sent_any = False
-    for text in outbound_messages:
-        clean = " ".join(str(text or "").split()).strip()
-        if not clean:
-            continue
-        await _safe_reply_markdown(update, clean)
-        sent_any = True
-    return sent_any
 
 
 async def _get_user_profile_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
@@ -132,156 +93,6 @@ async def _stream_words(
     await _deliver_final_text_and_outbound(update, chat_handler, final_text)
 
 
-async def _send_outbound_media_with_caption(update: Update, media_items: list, text: str):
-    chat = update.effective_chat
-    if not chat or not media_items:
-        if text:
-            await send_chunked_response(update, text)
-        return False, [], []
-
-    safe_text = str(text or "").strip()
-    caption = safe_text[:TELEGRAM_CAPTION_LIMIT]
-    remain = safe_text[TELEGRAM_CAPTION_LIMIT:].strip() if safe_text else ""
-
-    prepared = []
-    image_descs = []
-    image_paths = []
-    for idx, item in enumerate(media_items[:5]):
-        if not isinstance(item, dict):
-            continue
-        data = item.get("data")
-        if not isinstance(data, (bytes, bytearray)) or not data:
-            continue
-        mime = str(item.get("mime_type") or "image/jpeg").strip().lower()
-        ext = ".png" if "png" in mime else ".jpg"
-        bio = io.BytesIO(bytes(data))
-        bio.name = f"web_{idx + 1}{ext}"
-        prepared.append(bio)
-        desc = " ".join(str(item.get("description") or "").split()).strip()
-        if desc:
-            image_descs.append(desc)
-        p = str(item.get("path") or "").strip()
-        if p:
-            image_paths.append(p)
-
-    if not prepared:
-        if safe_text:
-            await send_chunked_response(update, safe_text)
-        return False, [], []
-
-    if len(prepared) == 1:
-        try:
-            await update.get_bot().send_photo(
-                chat_id=chat.id,
-                photo=prepared[0],
-                caption=caption or None,
-                parse_mode=ParseMode.HTML if caption else None,
-            )
-        except TelegramError:
-            await update.get_bot().send_photo(
-                chat_id=chat.id,
-                photo=prepared[0],
-                caption=caption or None,
-            )
-    else:
-        media = []
-        for idx, bio in enumerate(prepared):
-            media.append(
-                InputMediaPhoto(
-                    media=bio,
-                    caption=caption if idx == 0 and caption else None,
-                    parse_mode=ParseMode.HTML if idx == 0 and caption else None,
-                )
-            )
-        try:
-            await update.get_bot().send_media_group(chat_id=chat.id, media=media)
-        except TelegramError:
-            media_plain = []
-            for idx, bio in enumerate(prepared):
-                media_plain.append(InputMediaPhoto(media=bio, caption=caption if idx == 0 and caption else None))
-            await update.get_bot().send_media_group(chat_id=chat.id, media=media_plain)
-
-    if remain:
-        await send_chunked_response(update, remain)
-    return True, image_descs, image_paths
-
-
-async def _send_outbound_files_with_caption(update: Update, file_items: list, text: str):
-    chat = update.effective_chat
-    if not chat or not file_items:
-        if text:
-            await send_chunked_response(update, text)
-        return False
-
-    safe_text = str(text or "").strip()
-    caption = safe_text[:TELEGRAM_CAPTION_LIMIT]
-    remain = safe_text[TELEGRAM_CAPTION_LIMIT:].strip() if safe_text else ""
-
-    prepared = []
-    for item in file_items[:5]:
-        if not isinstance(item, dict):
-            continue
-        path = str(item.get("path") or "").strip()
-        if not path or not os.path.isfile(path):
-            continue
-        filename = str(item.get("filename") or "").strip() or os.path.basename(path)
-        extra_caption = " ".join(str(item.get("caption") or "").split()).strip()
-        prepared.append(
-            {
-                "path": path,
-                "filename": filename,
-                "caption": extra_caption,
-                "cleanup_after_send": bool(item.get("cleanup_after_send")),
-            }
-        )
-
-    if not prepared:
-        if safe_text:
-            await send_chunked_response(update, safe_text)
-        return False
-
-    sent_count = 0
-    for idx, item in enumerate(prepared):
-        try:
-            with open(item["path"], "rb") as fp:
-                doc = InputFile(fp, filename=item["filename"])
-                this_caption = (caption or item["caption"]) if idx == 0 else None
-                try:
-                    await update.get_bot().send_document(
-                        chat_id=chat.id,
-                        document=doc,
-                        caption=this_caption,
-                        parse_mode=ParseMode.HTML if this_caption else None,
-                    )
-                    sent_count += 1
-                except TelegramError:
-                    fp.seek(0)
-                    doc_plain = InputFile(fp, filename=item["filename"])
-                    await update.get_bot().send_document(
-                        chat_id=chat.id,
-                        document=doc_plain,
-                        caption=this_caption,
-                    )
-                    sent_count += 1
-        except Exception as e:
-            logger.error(f"Failed sending outbound file '{item.get('path')}': {e}")
-        finally:
-            if bool(item.get("cleanup_after_send")):
-                try:
-                    if os.path.isfile(item["path"]):
-                        os.remove(item["path"])
-                except Exception:
-                    pass
-
-    if sent_count <= 0:
-        if safe_text:
-            await send_chunked_response(update, safe_text)
-        return False
-
-    if remain:
-        await send_chunked_response(update, remain)
-    return True
-
 async def _stream_video_sticker(
     update: Update,
     chat_handler,
@@ -323,12 +134,12 @@ async def _run_with_typing(update: Update, chat_handler, fn, *args):
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(None, fn, *args)
         while not future.done():
-            await _flush_outbound_messages(update, chat_handler)
+            await flush_outbound_messages(chat_handler, lambda text: _safe_reply_markdown(update, text))
             try:
                 await asyncio.wait_for(asyncio.shield(future), timeout=0.25)
             except asyncio.TimeoutError:
                 continue
-        await _flush_outbound_messages(update, chat_handler)
+        await flush_outbound_messages(chat_handler, lambda text: _safe_reply_markdown(update, text))
         final_text = await future
         if not final_text or final_text == "ERROR":
             final_text = "Maaf, ada kesalahan sistem internal."
@@ -357,7 +168,14 @@ async def _deliver_final_text_and_outbound(update: Update, chat_handler, final_t
 
         remaining_text = str(final_text or "").strip()
         if outbound_media:
-            sent_ok, sent_descs, sent_paths = await _send_outbound_media_with_caption(update, outbound_media, remaining_text)
+            sent_ok, sent_paths = await send_outbound_media_with_caption(
+                outbound_media,
+                remaining_text,
+                send_photo=lambda **kwargs: update.get_bot().send_photo(chat_id=update.effective_chat.id, **kwargs),
+                send_media_group=lambda **kwargs: update.get_bot().send_media_group(chat_id=update.effective_chat.id, **kwargs),
+                send_text=lambda text: send_chunked_response(update, text),
+                file_prefix="web",
+            )
             if sent_ok:
                 delivered_any = True
                 remaining_text = ""
@@ -366,7 +184,14 @@ async def _deliver_final_text_and_outbound(update: Update, chat_handler, final_t
                 except Exception as meta_err:
                     logger.warning(f"Failed to persist model image paths: {meta_err}")
         if outbound_files:
-            sent_ok = await _send_outbound_files_with_caption(update, outbound_files, remaining_text)
+            sent_ok = await send_outbound_files_with_caption(
+                outbound_files,
+                remaining_text,
+                send_document=lambda **kwargs: update.get_bot().send_document(chat_id=update.effective_chat.id, **kwargs),
+                send_text=lambda text: send_chunked_response(update, text),
+                logger=logger,
+                log_prefix="outbound",
+            )
             if sent_ok:
                 delivered_any = True
                 remaining_text = ""
@@ -394,6 +219,14 @@ async def _deliver_final_text_and_outbound(update: Update, chat_handler, final_t
             )
         except Exception as claim_err:
             logger.warning(f"Failed finalizing pending interaction schedules: {claim_err}")
+
+
+async def _safe_reply_markdown(update: Update, text: str):
+    await safe_send_text(
+        text,
+        send_html=lambda clean: update.message.reply_text(clean, parse_mode="HTML"),
+        send_plain=lambda clean: update.message.reply_text(clean, parse_mode=None),
+    )
 
 
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -624,4 +457,3 @@ async def handle_video(update: Update, user_dir: str) -> Optional[str]:
                 pass
         await update.message.reply_text("Gagal memproses video.")
         return None
-

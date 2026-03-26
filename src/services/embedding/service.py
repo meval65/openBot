@@ -5,7 +5,7 @@ import hashlib
 import functools
 import threading
 import re
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
 from collections import deque
 
 import time
@@ -85,11 +85,6 @@ class MemoryAnalyzer:
     def _cached_text_embedding_key(text: str) -> str:
         """LRU-cached full SHA256 hash of text content â€” avoids re-hashing identical inputs."""
         return hashlib.sha256(text.encode('utf-8')).hexdigest()
-
-    def _get_cache_key(self, content: Union[str, bytes], content_type: str = "text") -> str:
-        if isinstance(content, bytes):
-            return hashlib.sha256(f"{content_type}:".encode() + content).hexdigest()
-        return hashlib.sha256(f"{content_type}:{content}".encode('utf-8')).hexdigest()
 
     @staticmethod
     def _looks_low_signal_text(text: str) -> bool:
@@ -409,91 +404,4 @@ class MemoryAnalyzer:
             if ev:
                 ev.set()
 
-    def get_embeddings_batch(self, image_paths: list) -> list:
-        if image_paths:
-            logger.info("[EMBED] Batch multimodal embedding dinonaktifkan.")
-        return [[] for _ in (image_paths or [])]
-
-    def get_text_embeddings_batch(self, texts: list[str], use_cache: bool = True) -> list[list[float]]:
-        if not texts:
-            return []
-
-        prepared: list[tuple[int, str, str]] = []  # (orig_idx, text, cache_key)
-        results: list[list[float]] = [[] for _ in texts]
-
-        for i, raw in enumerate(texts):
-            text = self._preprocess_text(str(raw or ""))
-            if not text or self._looks_low_signal_text(text):
-                continue
-
-            cache_key = None
-            if use_cache:
-                cache_key = self._cached_text_embedding_key(text)
-                cached = self._get_cached_embedding(cache_key)
-                if cached is not None:
-                    results[i] = cached
-                    continue
-
-            prepared.append((i, text, cache_key or ""))
-
-        if not prepared:
-            return results
-
-        max_attempts = max(3, len(self.api_keys) + 1)
-        config = types.EmbedContentConfig(output_dimensionality=EMBEDDING_OUTPUT_DIM)
-        contents = [p[1] for p in prepared]
-
-        for attempt in range(max_attempts):
-            try:
-                self._throttle_embed_budget(self._estimate_embed_tokens_for_contents(contents))
-                response = self.client.models.embed_content(
-                    model=EMBEDDING_MODEL,
-                    contents=contents,
-                    config=config,
-                )
-                self.health_monitor.mark_success(self.current_key_index)
-                vectors = [list(e.values) for e in response.embeddings]
-                for batch_idx, (orig_idx, _, cache_key) in enumerate(prepared):
-                    if batch_idx >= len(vectors):
-                        continue
-                    vec = vectors[batch_idx]
-                    if not vec:
-                        continue
-                    if self.expected_dimension is None:
-                        self.expected_dimension = len(vec)
-                    elif len(vec) != self.expected_dimension:
-                        logger.error(
-                            f"[EMBED-TEXT-BATCH] Dimension mismatch: expected {self.expected_dimension}, got {len(vec)}"
-                        )
-                        continue
-                    results[orig_idx] = vec
-                    if use_cache and cache_key:
-                        self._set_cached_embedding(cache_key, vec)
-                return results
-            except Exception as e:
-                classification = classify_api_error(e)
-                reason_code = str(classification.get("reason_code") or "other")
-                logger.error(
-                    f"[API-KEY-{self.current_key_index+1}] [EMBED-TEXT-BATCH] Attempt {attempt+1} failed: {e}",
-                    exc_info=(attempt == 1),
-                )
-
-                if reason_code == "quota_exhausted":
-                    logger.warning("[EMBED] Text embedding batch kena quota/resource exhausted, coba ulang sebentar lagi.")
-                if handle_api_error_retry(
-                    self,
-                    reason_code=reason_code,
-                    attempt=attempt,
-                    base_retry_delay=1.0,
-                    rotate_sleep_seconds=1.0,
-                    quota_retry_delay=1.0,
-                ):
-                    continue
-                time.sleep(1.0 + attempt)
-
-        return results
-
-    def clear_cache(self):
-        self._cached_text_embedding_key.cache_clear()
-        self.embedding_cache.clear()
 

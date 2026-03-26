@@ -1,4 +1,3 @@
-import datetime
 import hashlib
 import json
 import logging
@@ -15,7 +14,7 @@ from pymeteosource.types import sections, tiers, units
 
 from src.config import BOT_DISPLAY_NAME, METEOSOURCE_API_KEY, PROACTIVE_ANALYSIS_MODEL
 from src.utils.api_utils import with_retry
-from src.utils.time_utils import get_local_tz, now_local as _now_local, parse_local_dt as _parse_local_dt
+from src.utils.time_utils import now_local as _now_local, to_local_aware
 
 if TYPE_CHECKING:
     from src.services.chat.handler import ChatHandler
@@ -45,23 +44,8 @@ def _is_night_mode() -> bool:
         return NIGHT_START_HOUR <= h < NIGHT_END_HOUR
     return h >= NIGHT_START_HOUR or h < NIGHT_END_HOUR
 
-
-def _parse_dt(value):
-    if not value:
-        return None
-    if isinstance(value, datetime.datetime):
-        dt = value
-    else:
-        dt = _parse_local_dt(str(value))
-    if not dt:
-        return None
-    if dt.tzinfo is None:
-        dt = get_local_tz().localize(dt)
-    return dt.astimezone(get_local_tz())
-
-
 def _gap_seconds_from(value) -> Optional[int]:
-    dt = _parse_dt(value)
+    dt = to_local_aware(value)
     if not dt:
         return None
     return int((_now_local() - dt).total_seconds())
