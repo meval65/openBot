@@ -6,7 +6,6 @@ import mimetypes
 import os
 import shutil
 import subprocess
-import tempfile
 from typing import Optional, Tuple
 
 from PIL import Image, ImageDraw
@@ -17,9 +16,6 @@ from src.config import (
     VIDEO_MAX_DURATION_SECONDS,
     VIDEO_VISUAL_BASE_TOKENS,
     VIDEO_VISUAL_TOKENS_PER_SECOND,
-    VIDEO_TARGET_HEIGHT,
-    VIDEO_SCALE_ALGO,
-    VIDEO_STORE_DIR,
 )
 from . import catalog
 
@@ -87,54 +83,6 @@ def estimate_video_visual_units(path: str) -> float:
         return max(0.1, float(est_tokens / denom))
     except Exception:
         return 1.0
-
-
-def _safe_scale_algo() -> str:
-    # ffmpeg scale flags that are commonly available.
-    if VIDEO_SCALE_ALGO in {"bicubic", "bilinear", "lanczos", "spline"}:
-        return VIDEO_SCALE_ALGO
-    return "bicubic"
-
-
-def _video_profile_key() -> str:
-    scale_algo = _safe_scale_algo()
-    return f"h{int(VIDEO_TARGET_HEIGHT)}|d{int(VIDEO_MAX_DURATION_SECONDS)}|alg:{scale_algo}|v:1"
-
-
-def _cache_lookup_key(original_hash: str) -> str:
-    return f"{original_hash}|{_video_profile_key()}"
-
-
-def _output_path_for_cache_key(cache_key: str, ext: str = ".mp4", target_dir: str = VIDEO_STORE_DIR) -> str:
-    digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
-    safe_ext = str(ext or ".mp4").lower()
-    if not safe_ext.startswith("."):
-        safe_ext = f".{safe_ext}"
-    return os.path.join(target_dir, f"{digest}_opt{safe_ext}")
-
-
-def _is_sticker_video_source(path: str) -> bool:
-    norm = str(path or "").replace("\\", "/").lower()
-    base = os.path.basename(norm)
-    return (
-        base.startswith("sticker_")
-        or "/stickers/" in norm
-    )
-
-
-def _normalized_source_ext(path: str) -> str:
-    ext = os.path.splitext(str(path or ""))[1].lower()
-    if ext in {".mp4", ".webm", ".mov", ".m4v"}:
-        return ext
-    return ".mp4"
-
-
-def _mime_for_video_path(path: str) -> str:
-    mime_type, _ = mimetypes.guess_type(path)
-    if mime_type and mime_type.startswith("video/"):
-        return mime_type
-    return "video/mp4"
-
 
 def _video_collage_cache_paths(video_hash: str) -> Tuple[str, str]:
     # v4: fixed 3x3 collage with interval-ms sampling + white padding slots.
@@ -290,38 +238,3 @@ def get_video_collage_payload(path: str) -> Optional[Tuple[bytes, str, int]]:
         logger.warning(f"[VIDEO-COLLAGE] Failed: {e}")
         return None
 
-
-def _lookup_cached_video(db, cache_key: str) -> Optional[str]:
-    try:
-        row = catalog.get_video_cache(cache_key)
-        if not row:
-            return None
-        cached_path = str(row.get("optimized_path") or "").strip()
-        if not cached_path or not os.path.exists(cached_path):
-            return None
-        return cached_path
-    except Exception as e:
-        logger.warning(f"[VIDEO-CACHE] DB lookup failed: {e}")
-        return None
-
-
-def _upsert_video_cache(db, cache_key: str, optimized_path: str, mime_type: str):
-    try:
-        catalog.upsert_video_cache(cache_key, optimized_path, mime_type)
-    except Exception as e:
-        logger.warning(f"[VIDEO-CACHE] DB upsert failed: {e}")
-
-
-def generate_video_description(chat_handler, video_path: str, user_caption: str, extra_context: str = "") -> str:
-    _, _, video_hash = read_video_bytes(video_path)
-    cached_desc = catalog.get_video_description(video_hash)
-    if cached_desc and not str(extra_context or "").strip():
-        desc = str(cached_desc).strip()
-        return str(desc or "").strip() or "User mengirim video."
-
-    description = str(user_caption or "").strip()[:220] or "User mengirim video."
-    extra = str(extra_context or "").strip()
-    if extra:
-        description = f"{description} | Konteks: {extra[:180]}"
-    catalog.upsert_video_description(video_hash, description, video_path)
-    return description

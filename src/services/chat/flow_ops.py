@@ -333,7 +333,7 @@ def execute_flow(
 
     if video_path and os.path.exists(video_path):
         try:
-            video_media_ctx = ingest_local_video(self.cache_db, video_path)
+            video_media_ctx = ingest_local_video(video_path)
             permanent_video_path = video_media_ctx["stored_path"]
             vdata = video_media_ctx["analysis_data"]
             vmime = video_media_ctx["analysis_mime"]

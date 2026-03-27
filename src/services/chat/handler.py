@@ -187,7 +187,7 @@ class ChatHandler:
         self._terminal_health_fail_streak = 0
         self._terminal_health_success_streak = 0
         self._terminal_monitor_started = False
-        self.proactive_learning = ProactiveLearning()
+        self.proactive_learning = ProactiveLearning(db=self.cache_db)
         self._user_profile_refresh_lock = threading.Lock()
         self._user_profile_refresh_running = False
 
@@ -563,7 +563,10 @@ class ChatHandler:
                 video_path=video_path,
                 user_profile_context=user_profile_context,
             )
-            self.proactive_learning.record_user_message()
+            self.proactive_learning.record_user_message(
+                counts_as_reply=not bool(image_path or video_path),
+                message_text=user_text,
+            )
             success = True
             return result
         except LLMGenerationError as e:

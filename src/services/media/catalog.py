@@ -17,9 +17,7 @@ def _now_iso() -> str:
 
 def _default_state() -> Dict:
     return {
-        "image_descriptions": {},
-        "video_descriptions": {},
-        "video_cache": {},
+        "web_images": {},
         "web_image_sources": {},
         "web_image_raw_hashes": {},
     }
@@ -43,6 +41,21 @@ def _ensure_loaded():
         for k in base.keys():
             v = data.get(k)
             base[k] = v if isinstance(v, dict) else {}
+        legacy_images = data.get("image_descriptions")
+        if isinstance(legacy_images, dict):
+            for media_hash, entry in legacy_images.items():
+                if not isinstance(entry, dict):
+                    continue
+                key = str(media_hash or "").strip().lower()
+                if not key or key in base["web_images"]:
+                    continue
+                base["web_images"][key] = {
+                    "file_path": str(entry.get("file_path") or "").strip(),
+                    "description": str(entry.get("description") or "").strip(),
+                    "created_at": str(entry.get("created_at") or _now_iso()).strip() or _now_iso(),
+                    "last_used_at": str(entry.get("last_used_at") or "").strip(),
+                    "use_count": int(entry.get("use_count", 0) or 0),
+                }
         _STATE = base
     except Exception:
         _STATE = _default_state()
@@ -61,102 +74,36 @@ def _touch(entry: Dict):
     entry["use_count"] = int(entry.get("use_count", 0) or 0) + 1
 
 
-def get_image_description(media_hash: str) -> Optional[Dict]:
+def get_web_image_asset(media_hash: str) -> Optional[Dict]:
     key = str(media_hash or "").strip().lower()
     if not key:
         return None
     with _LOCK:
         _ensure_loaded()
-        entry = (_STATE["image_descriptions"]).get(key)
+        entry = (_STATE["web_images"]).get(key)
         if not isinstance(entry, dict):
             return None
         _touch(entry)
-        _save()
         return {
             "description": str(entry.get("description") or "").strip(),
             "file_path": str(entry.get("file_path") or "").strip(),
         }
 
 
-def upsert_image_description(media_hash: str, description: str, file_path: str = ""):
+def upsert_web_image_asset(media_hash: str, file_path: str = "", description: str = ""):
     key = str(media_hash or "").strip().lower()
     if not key:
         return
     with _LOCK:
         _ensure_loaded()
-        bucket = _STATE["image_descriptions"]
+        bucket = _STATE["web_images"]
         entry = bucket.get(key) or {"created_at": _now_iso(), "use_count": 0}
-        desc = str(description or "").strip()
         path = str(file_path or "").strip()
-        if desc:
-            entry["description"] = desc
+        desc = str(description or "").strip()
         if path:
             entry["file_path"] = path
-        _touch(entry)
-        bucket[key] = entry
-        _save()
-
-
-def get_video_description(media_hash: str) -> Optional[str]:
-    key = str(media_hash or "").strip().lower()
-    if not key:
-        return None
-    with _LOCK:
-        _ensure_loaded()
-        entry = (_STATE["video_descriptions"]).get(key)
-        if not isinstance(entry, dict):
-            return None
-        _touch(entry)
-        _save()
-        return str(entry.get("description") or "").strip() or None
-
-
-def upsert_video_description(media_hash: str, description: str, file_path: str = ""):
-    key = str(media_hash or "").strip().lower()
-    if not key:
-        return
-    with _LOCK:
-        _ensure_loaded()
-        bucket = _STATE["video_descriptions"]
-        entry = bucket.get(key) or {"created_at": _now_iso(), "use_count": 0}
-        desc = str(description or "").strip()
-        path = str(file_path or "").strip()
         if desc:
             entry["description"] = desc
-        if path:
-            entry["file_path"] = path
-        _touch(entry)
-        bucket[key] = entry
-        _save()
-
-
-def get_video_cache(cache_key: str) -> Optional[Dict]:
-    key = str(cache_key or "").strip()
-    if not key:
-        return None
-    with _LOCK:
-        _ensure_loaded()
-        entry = (_STATE["video_cache"]).get(key)
-        if not isinstance(entry, dict):
-            return None
-        _touch(entry)
-        _save()
-        return {
-            "optimized_path": str(entry.get("optimized_path") or "").strip(),
-            "optimized_mime": str(entry.get("optimized_mime") or "").strip(),
-        }
-
-
-def upsert_video_cache(cache_key: str, optimized_path: str, optimized_mime: str):
-    key = str(cache_key or "").strip()
-    if not key:
-        return
-    with _LOCK:
-        _ensure_loaded()
-        bucket = _STATE["video_cache"]
-        entry = bucket.get(key) or {"created_at": _now_iso(), "use_count": 0}
-        entry["optimized_path"] = str(optimized_path or "").strip()
-        entry["optimized_mime"] = str(optimized_mime or "").strip()
         _touch(entry)
         bucket[key] = entry
         _save()
@@ -172,7 +119,6 @@ def get_web_image_source(source_url: str) -> Optional[Dict]:
         if not isinstance(entry, dict):
             return None
         _touch(entry)
-        _save()
         return {
             "media_hash": str(entry.get("media_hash") or "").strip().lower(),
             "description": str(entry.get("description") or "").strip(),
@@ -207,7 +153,6 @@ def get_web_raw_hash(raw_hash: str) -> Optional[str]:
         if not isinstance(entry, dict):
             return None
         _touch(entry)
-        _save()
         return str(entry.get("media_hash") or "").strip().lower() or None
 
 

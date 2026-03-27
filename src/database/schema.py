@@ -113,6 +113,51 @@ def create_tables(conn: sqlite3.Connection, lock):
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS proactive_learning_hourly (
+                hour INTEGER PRIMARY KEY,
+                user_chats REAL NOT NULL DEFAULT 0,
+                proactive_sent REAL NOT NULL DEFAULT 0,
+                proactive_replied REAL NOT NULL DEFAULT 0,
+                reply_latency_total_sec REAL NOT NULL DEFAULT 0,
+                reply_latency_count REAL NOT NULL DEFAULT 0,
+                CHECK(hour BETWEEN 0 AND 23)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS proactive_learning_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                pending_sent_ts TIMESTAMP,
+                pending_hour INTEGER,
+                recent_ignored_count INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+
+        cursor.executemany(
+            """
+            INSERT OR IGNORE INTO proactive_learning_hourly (
+                hour,
+                user_chats,
+                proactive_sent,
+                proactive_replied,
+                reply_latency_total_sec,
+                reply_latency_count
+            ) VALUES (?, 0, 0, 0, 0, 0)
+            """,
+            [(i,) for i in range(24)],
+        )
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO proactive_learning_state (
+                id,
+                pending_sent_ts,
+                pending_hour,
+                recent_ignored_count
+            ) VALUES (1, NULL, NULL, 0)
+            """
+        )
+
         conn.commit()
 
 

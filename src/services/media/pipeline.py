@@ -56,7 +56,7 @@ def load_image_analysis(path: str) -> Dict:
     }
 
 
-def ingest_local_video(db, path: str) -> Dict:
+def ingest_local_video(path: str) -> Dict:
     media_data, media_mime, media_hash = read_video_bytes(path)
     return {
         "kind": "video",
@@ -96,8 +96,8 @@ def load_video_analysis(path: str) -> Dict:
     }
 
 
-def build_video_sticker_payload(db, path: str) -> Dict:
-    video = ingest_local_video(db, path)
+def build_video_sticker_payload(path: str) -> Dict:
+    video = ingest_local_video(path)
     collage = get_video_collage_payload(video["stored_path"])
     if collage:
         cdata, cmime, frame_count = collage

@@ -1,10 +1,7 @@
 import os
-import uuid
 import mimetypes
-import datetime
 import logging
 import json
-import threading
 import io
 from typing import Optional, Dict
 import re
@@ -28,24 +25,16 @@ TARGET_MEGAPIXELS = 0.85
 TILE_SIZE = 1024
 TILING_RATIO_THRESHOLD = 2.5
 TILING_SHORT_SIDE_THRESHOLD = 1024
-_MEDIA_CACHE_LOCK = threading.RLock()
 _STICKER_ID_RE = re.compile(r"^sticker_([A-Za-z0-9_-]{8,})", re.IGNORECASE)
-def _get_cache_value(chat_handler, key: str):
+def _upsert_web_image_asset(media_hash: str, file_path: str = "", description: str = ""):
     try:
-        row = catalog.get_image_description(key)
-        if not row:
-            return None
-        return str(row.get("description") or "").strip() or None
+        catalog.upsert_web_image_asset(
+            media_hash,
+            file_path=str(file_path or "").strip(),
+            description=str(description or "").strip(),
+        )
     except Exception as e:
-        logger.warning(f"[IMG-CACHE] Cache read failed: {e}")
-        return None
-
-
-def _set_cache_value(chat_handler, key: str, value: str, file_path: str = ""):
-    try:
-        catalog.upsert_image_description(key, str(value or "").strip(), str(file_path or "").strip())
-    except Exception as e:
-        logger.warning(f"[IMG-CACHE] Cache write failed: {e}")
+        logger.warning(f"[WEB-IMG-ASSET] Cache write failed: {e}")
 
 
 def read_image_bytes(path: str):
@@ -254,7 +243,7 @@ def _upsert_web_image_source(source_url: str, media_hash: str, description: str 
 
 
 def _touch_media_description_usage(media_hash: str):
-    row = catalog.get_image_description(media_hash)
+    row = catalog.get_web_image_asset(media_hash)
     if row is None:
         return
 
@@ -267,7 +256,7 @@ def _resolve_media_description_row_by_hash(media_hash: str) -> Optional[Dict]:
     h = str(media_hash or "").strip().lower()
     if not h:
         return None
-    row = catalog.get_image_description(h)
+    row = catalog.get_web_image_asset(h)
     if row is None:
         return None
     return {
@@ -371,7 +360,7 @@ def ingest_web_image(
             with open(dest_path, "wb") as f:
                 f.write(normalized["data"])
 
-        _set_cache_value(chat_handler, media_hash, image_description or "", dest_path)
+        _upsert_web_image_asset(media_hash, dest_path, image_description or "")
         _upsert_web_image_source(src, media_hash, image_description)
         _upsert_web_image_raw_hash(raw_hash, media_hash)
         return {
@@ -477,32 +466,6 @@ def _compose_visual_description(
     if parts:
         return " | ".join(parts)
     return f"User mengirim {media_label}."
-
-
-def generate_image_description(chat_handler, image_path: str, user_caption: str, extra_context: str = "") -> str:
-    _, _, sha256_hex = read_image_bytes(image_path)
-    cached = _get_cache_value(chat_handler, sha256_hex)
-    if cached and not str(extra_context or "").strip():
-        logger.info(f"[IMG-CACHE] Found cached description for {sha256_hex}")
-        return cached
-
-    _, _, animated_mode, animated_frame_count = get_image_analysis_payload(image_path)
-    detail_hint = ""
-    if animated_mode:
-        media_label = "sticker animasi" if _is_sticker_image_path(image_path) else "gambar animasi"
-        if animated_frame_count > 0:
-            detail_hint = f"Frame ringkasan: {int(animated_frame_count)}."
-    else:
-        media_label = "sebuah gambar"
-
-    description = _compose_visual_description(
-        media_label=media_label,
-        user_caption=user_caption,
-        extra_context=extra_context,
-        detail_hint=detail_hint,
-    )
-    _set_cache_value(chat_handler, sha256_hex, description, image_path)
-    return description
 
 
 def _describe_tile(chat_handler, tile_path: str, caption: str, tile_idx: int, total: int) -> str:

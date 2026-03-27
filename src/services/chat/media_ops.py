@@ -139,7 +139,7 @@ def process_video_sticker_message(
                 persist=True,
             )
 
-        video_ctx = build_video_sticker_payload(self.cache_db, video_file_path)
+        video_ctx = build_video_sticker_payload(video_file_path)
         video_data = video_ctx["analysis_data"]
         mime_type = _normalize_sticker_video_payload_mime(video_ctx)
         video_hash = video_ctx["hash"]
