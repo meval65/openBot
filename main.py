@@ -50,7 +50,7 @@ _LOCK_ACQUIRED = False
 
 
 def _setup_logging() -> int:
-    log_level = logging.ERROR
+    log_level = logging.WARNING
 
     old_factory = logging.getLogRecordFactory()
 

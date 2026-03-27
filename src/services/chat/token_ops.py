@@ -190,8 +190,9 @@ def count_history_tokens_native(self, history_deque) -> int:
     max_attempts = min(2, max(1, CHAT_MAX_RETRIES))
     for attempt in range(max_attempts):
         active_model = self._select_chat_model_for_attempt()
+        request_key_index = int(getattr(self, "current_key_index", 0) or 0)
         try:
-            _, request_client = self._get_client_snapshot()
+            request_key_index, request_client = self._get_client_snapshot()
             resp = request_client.models.count_tokens(
                 model=active_model,
                 contents=contents,
@@ -211,6 +212,7 @@ def count_history_tokens_native(self, history_deque) -> int:
             if handle_api_error_retry(
                 self,
                 reason_code=reason_code,
+                key_index=request_key_index,
                 attempt=attempt,
                 base_retry_delay=0.5,
                 rotate_sleep_seconds=0.5,
@@ -218,9 +220,10 @@ def count_history_tokens_native(self, history_deque) -> int:
                 model_name=active_model,
                 set_model_penalty_seconds=60.0,
                 set_model_penalty_fn=self._set_model_penalty,
+                set_model_high_demand_penalty_fn=self._set_model_high_demand_penalty,
                 all_models_in_penalty_fn=lambda: all_chat_models_in_penalty(self),
                 all_models_penalty_log="Semua model chat sedang cooldown saat hitung token. Coba ganti API key.",
-                rotate_api_key_fn=self._rotate_api_key,
+                rotate_api_key_fn=lambda: False,
                 high_demand_backoff_fn=self._high_demand_backoff,
             ):
                 continue

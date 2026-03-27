@@ -160,12 +160,12 @@ class APIKeyHealthMonitor:
             best_cand = min(self.health.keys(), key=lambda k: self.health[k]['recovery_until'])
             wait_time = max(0, self.health[best_cand]['recovery_until'] - now)
             logger.warning(
-                "Semua %d API key masih masa tunggu. Pakai sementara key #%d (sisa ~%.0f detik).",
+                "Semua %d API key masih masa tunggu. Key tercepat pulih adalah #%d (sisa ~%.0f detik).",
                 total_keys,
                 best_cand + 1,
                 wait_time,
             )
-            return best_cand
+            return None
 
 
 def get_shared_api_key_monitor(api_keys: list, monitor_id: str = "default") -> APIKeyHealthMonitor:

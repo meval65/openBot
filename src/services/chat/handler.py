@@ -126,6 +126,7 @@ class ChatHandler:
 
         self._model_penalty_lock = threading.Lock()
         self._model_penalty_until: Dict[str, float] = {}
+        self._model_high_demand_until: Dict[str, float] = {}
 
         _bot_terminal_id = (
             os.getenv("BOT_INSTANCE")
@@ -182,6 +183,8 @@ class ChatHandler:
         self._runtime_pause_reason = ""
         self._terminal_monitor_started = False
         self.proactive_learning = ProactiveLearning()
+        self._user_profile_refresh_lock = threading.Lock()
+        self._user_profile_refresh_running = False
 
         self._initialize_client()
         self._tools = self._build_python_tools()
@@ -315,6 +318,12 @@ class ChatHandler:
 
     def _set_model_penalty(self, model_name: str, seconds: float):
         return generation_ops.set_model_penalty(self, model_name, seconds)
+
+    def _get_model_high_demand_remaining(self, model_name: str) -> float:
+        return generation_ops.get_model_high_demand_remaining(self, model_name)
+
+    def _set_model_high_demand_penalty(self, model_name: str, seconds: float):
+        return generation_ops.set_model_high_demand_penalty(self, model_name, seconds)
 
     @staticmethod
     def _high_demand_backoff(attempt: int) -> float:

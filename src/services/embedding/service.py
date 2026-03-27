@@ -43,6 +43,7 @@ class MemoryAnalyzer:
         
         self.current_key_index = 0
         self.health_monitor = get_shared_api_key_monitor(self.api_keys, monitor_id="gemini")
+        self._client_state_lock = threading.Lock()
         self._initialize_client()
 
         self.MAX_TEXT_LENGTH = EMBEDDING_MAX_TEXT_LENGTH
@@ -62,20 +63,34 @@ class MemoryAnalyzer:
         self._load_disk_cache()
 
     def _initialize_client(self):
-        self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
-        logger.info("Embedding siap menggunakan API key #%d", self.current_key_index + 1)
+        with self._client_state_lock:
+            self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
+            active_index = int(self.current_key_index)
+        logger.info("Embedding siap menggunakan API key #%d", active_index + 1)
+
+    def _get_client_snapshot(self) -> tuple[int, genai.Client]:
+        with self._client_state_lock:
+            key_index = int(self.current_key_index)
+            api_key = str(self.api_keys[key_index])
+        return key_index, genai.Client(api_key=api_key)
 
     def _rotate_api_key(self) -> bool:
+        with self._client_state_lock:
+            current_index = int(self.current_key_index)
+            total_keys = len(self.api_keys)
         new_key_index = self.health_monitor.get_healthy_key(
-            self.current_key_index, len(self.api_keys)
+            current_index, total_keys
         )
         if new_key_index is None:
-            new_key_index = (self.current_key_index + 1) % len(self.api_keys)
-            
-        self.current_key_index = new_key_index
+            logger.warning("Tidak ada API key embedding yang sehat untuk dipakai saat ini.")
+            return False
+
         try:
-            self._initialize_client()
-            logger.warning("Embedding berpindah ke API key #%d", self.current_key_index + 1)
+            with self._client_state_lock:
+                self.current_key_index = int(new_key_index)
+                self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
+                active_index = int(self.current_key_index)
+            logger.warning("Embedding berpindah ke API key #%d", active_index + 1)
             return True
         except Exception as e:
             logger.error("Gagal mengganti API key embedding: %s", e)
@@ -343,14 +358,16 @@ class MemoryAnalyzer:
             config = types.EmbedContentConfig(output_dimensionality=EMBEDDING_OUTPUT_DIM)
             max_attempts = max(3, len(self.api_keys) + 1)
             for attempt in range(max_attempts):
+                request_key_index = int(getattr(self, "current_key_index", 0) or 0)
                 try:
                     self._throttle_embed_budget(self._estimate_embed_tokens_for_contents(parts))
-                    response = self.client.models.embed_content(
+                    request_key_index, request_client = self._get_client_snapshot()
+                    response = request_client.models.embed_content(
                         model=EMBEDDING_MODEL,
                         contents=parts,
                         config=config,
                     )
-                    self.health_monitor.mark_success(self.current_key_index)
+                    self.health_monitor.mark_success(request_key_index)
 
                     embedding = response.embeddings[0].values
 
@@ -376,7 +393,7 @@ class MemoryAnalyzer:
                     classification = classify_api_error(e)
                     reason_code = str(classification.get("reason_code") or "other")
                     logger.error(
-                        f"[API-KEY-{self.current_key_index+1}] [EMBED-FAIL] Error ({content_type}) Attempt {attempt+1}: {e}",
+                        f"[API-KEY-{request_key_index+1}] [EMBED-FAIL] Error ({content_type}) Attempt {attempt+1}: {e}",
                         exc_info=(attempt == 1),
                     )
 
@@ -385,6 +402,7 @@ class MemoryAnalyzer:
                     if handle_api_error_retry(
                         self,
                         reason_code=reason_code,
+                        key_index=request_key_index,
                         attempt=attempt,
                         base_retry_delay=1.0,
                         rotate_sleep_seconds=1.0,

@@ -2,6 +2,7 @@
 import os
 import threading
 import time
+import datetime
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -27,6 +28,171 @@ logger = logging.getLogger(__name__)
 
 BACKGROUND_ANALYSIS_DELAY_SECONDS = 30.0
 BACKGROUND_ANALYSIS_WINDOW = 30
+USER_PROFILE_SUMMARY_THRESHOLD = 5.0
+USER_PROFILE_RECENT_HISTORY_LIMIT = 24
+
+
+def _get_user_profile_summary_text(self) -> str:
+    return " ".join(
+        str(self.session_manager.get_metadata("user_profile_summary", "") or "").split()
+    ).strip()
+
+
+def _combine_user_profile_context(
+    external_context: Optional[str],
+    generated_summary: Optional[str],
+) -> str:
+    blocks: List[str] = []
+    ext = " ".join(str(external_context or "").split()).strip()
+    gen = " ".join(str(generated_summary or "").split()).strip()
+    if ext:
+        blocks.append(ext)
+    if gen:
+        blocks.append(f"[Ringkasan profil user saat ini]\n{gen}")
+    return "\n\n".join(blocks).strip()
+
+
+def bump_user_profile_update_score(self, amount: float, reason: str = "") -> float:
+    try:
+        current = float(self.session_manager.get_metadata("user_profile_update_score", 0.0) or 0.0)
+    except Exception:
+        current = 0.0
+    new_score = max(0.0, current + float(amount or 0.0))
+    self.session_manager.set_metadata(
+        "user_profile_update_score",
+        round(new_score, 2),
+        persist=True,
+    )
+    if reason:
+        logger.info(
+            "[USER-PROFILE] score += %.2f -> %.2f | reason=%s",
+            float(amount or 0.0),
+            new_score,
+            reason,
+        )
+    return new_score
+
+
+def _build_user_profile_recent_history(self, history: List[Dict]) -> str:
+    lines: List[str] = []
+    recent = list(history or [])[-USER_PROFILE_RECENT_HISTORY_LIMIT:]
+    for msg in recent:
+        if not isinstance(msg, dict):
+            continue
+        role = "User" if msg.get("role") == "user" else BOT_DISPLAY_NAME
+        parts = msg.get("parts", [])
+        text = " ".join(str(p or "").strip() for p in parts if isinstance(p, str)).strip()
+        if not text:
+            continue
+        lines.append(f"{role}: {text}")
+    return "\n".join(lines).strip()
+
+
+def _start_user_profile_refresh(self):
+    with self._user_profile_refresh_lock:
+        if self._user_profile_refresh_running:
+            return False
+        self._user_profile_refresh_running = True
+
+    def _run():
+        try:
+            generate_user_profile_summary(self)
+        finally:
+            with self._user_profile_refresh_lock:
+                self._user_profile_refresh_running = False
+
+    threading.Thread(target=_run, name="user-profile-refresh", daemon=True).start()
+    return True
+
+
+def maybe_schedule_user_profile_refresh(self):
+    try:
+        score = float(self.session_manager.get_metadata("user_profile_update_score", 0.0) or 0.0)
+    except Exception:
+        score = 0.0
+    if score < USER_PROFILE_SUMMARY_THRESHOLD:
+        return
+    started = _start_user_profile_refresh(self)
+    if started:
+        logger.info(
+            "[USER-PROFILE] refresh scheduled | score=%.2f threshold=%.2f",
+            score,
+            USER_PROFILE_SUMMARY_THRESHOLD,
+        )
+
+
+def generate_user_profile_summary(self):
+    try:
+        session_data = self._gather_session_data()
+        rolling_summary = " ".join(
+            str(self.session_manager.get_metadata("rolling_summary", "") or "").split()
+        ).strip()
+        previous_profile = _get_user_profile_summary_text(self)
+        recent_history = _build_user_profile_recent_history(self, list(session_data.get("history", [])))
+        top_memories = []
+        try:
+            for mem in self.memory_manager.get_top_memories(limit=12):
+                top_memories.append(f"- [{mem.get('type')}] {mem.get('summary')}")
+        except Exception as e:
+            logger.warning("[USER-PROFILE] failed reading top memories: %s", e)
+
+        prompt = f"""
+You are updating a concise user profile summary for a personal AI companion.
+Use only the information provided. Do not invent facts.
+Keep it concise, stable, and useful as future context.
+
+Output in English section headers exactly like this:
+#Work context
+#Personal context
+#Top of mind
+#Brief history
+#Recent months
+
+Write the content in natural Indonesian.
+If a section is unknown, write "Belum jelas".
+Keep each section short and meaningful.
+
+Meaning of sections:
+- #Work context: identitas kerja/sekolah/peran user yang relevan.
+- #Personal context: gambaran umum personal, minat, gaya, atau kecenderungan user.
+- #Top of mind: hal yang paling aktif, penting, atau sedang dikerjakan user saat ini.
+- #Brief history: riwayat singkat yang lebih stabil tentang user.
+- #Recent months: hal yang relatif baru dalam beberapa bulan terakhir.
+
+Previous Profile:
+{previous_profile or 'Belum ada profile sebelumnya.'}
+
+STM / Recent Conversation:
+{recent_history or 'Belum ada percakapan terbaru yang cukup.'}
+
+MTM / Rolling Summary:
+{rolling_summary or 'Belum ada rolling summary.'}
+
+LTM / Important Memories:
+{chr(10).join(top_memories).strip() or 'Belum ada.'}
+""".strip()
+
+        response = self.call_gemini(
+            model=BACKGROUND_SUMMARY_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=600,
+            ),
+        )
+        text = " ".join(str(getattr(response, "text", "") or "").split()).strip()
+        if not text:
+            return
+        self.session_manager.set_metadata("user_profile_summary", text, persist=True)
+        self.session_manager.set_metadata("user_profile_update_score", 0.0, persist=True)
+        self.session_manager.set_metadata(
+            "user_profile_summary_updated_at",
+            datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            persist=True,
+        )
+        logger.info("[USER-PROFILE] summary regenerated successfully.")
+    except Exception as e:
+        logger.error("[USER-PROFILE] regenerate failed: %s", e)
 
 
 def _stage_media_for_ai_workspace(self, local_path: Optional[str], media_kind: str) -> Dict[str, str]:
@@ -64,13 +230,17 @@ def build_generation_state(
     session_data = self._gather_session_data()
     relevant_memories = self._retrieve_memories(query_text)
     mood_context = self._extract_mood_context(relevant_memories)
+    combined_user_profile = _combine_user_profile_context(
+        user_profile_context,
+        _get_user_profile_summary_text(self),
+    )
 
     system_context = self.context_builder.build_context(
         relevant_memories,
         session_data["last_interaction"],
         schedule_context,
         mood_context=mood_context,
-        user_profile_context=user_profile_context,
+        user_profile_context=combined_user_profile,
     )
 
     rolling_summary = self.session_manager.get_metadata("rolling_summary")
@@ -403,6 +573,18 @@ def post_process_response(
             args=(extracted,),
             daemon=True,
         ).start()
+
+    score_delta = 1.0
+    if len(str(user_text or "").split()) >= 16 or len(str(user_text or "").strip()) >= 100:
+        score_delta += 1.0
+    if image_path:
+        score_delta += 1.0
+    if video_path:
+        score_delta += 1.0
+    if history_trimmed:
+        score_delta += 1.0
+    bump_user_profile_update_score(self, score_delta, reason="post_process_response")
+    maybe_schedule_user_profile_refresh(self)
 
 
 def generate_rolling_summary(self, extracted_messages: list):

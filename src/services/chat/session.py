@@ -35,7 +35,13 @@ _INLINE_TOOL_CALL_RE = re.compile(
     r"(?:`?\s*(?:ai_personal_computer|search_web|create_schedule|list_schedules|cancel_schedule|save_memory|list_memories|forget_memory|update_memory|inspect_images_from_ai_personal_computer|send_files_from_ai_personal_computer|announce_action)\s*`?)\s*\([^`]*\)\s*`?",
     re.IGNORECASE,
 )
-_PERSISTED_EXTRA_METADATA_KEYS = {"user_profile_context", "visual_token_factor"}
+_PERSISTED_EXTRA_METADATA_KEYS = {
+    "user_profile_context",
+    "visual_token_factor",
+    "user_profile_summary",
+    "user_profile_update_score",
+    "user_profile_summary_updated_at",
+}
 
 
 def _is_sticker_media_path(path: str) -> bool:

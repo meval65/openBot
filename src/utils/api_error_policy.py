@@ -131,20 +131,24 @@ def classify_api_error(error_obj: Any) -> Dict[str, Any]:
 def apply_key_penalty_and_rotate(
     self,
     *,
+    key_index: Optional[int] = None,
     recovery_window: float,
     reason_text: str,
     reason_code: str,
     force_unhealthy: bool = True,
     rotate_sleep_seconds: float = 1.0,
+    rotate_api_key_fn: Optional[Callable[[], bool]] = None,
 ) -> bool:
+    target_key_index = int(self.current_key_index if key_index is None else key_index)
     self.health_monitor.mark_failure(
-        self.current_key_index,
+        target_key_index,
         force_unhealthy=force_unhealthy,
         recovery_window=recovery_window,
         reason_text=reason_text,
         reason_code=reason_code,
     )
-    if self._rotate_api_key():
+    rotate_fn = rotate_api_key_fn or getattr(self, "_rotate_api_key", None)
+    if callable(rotate_fn) and rotate_fn():
         time.sleep(max(0.0, float(rotate_sleep_seconds)))
         return True
     return False
@@ -176,6 +180,7 @@ def handle_api_error_retry(
     self,
     *,
     reason_code: str,
+    key_index: Optional[int] = None,
     attempt: int = 0,
     base_retry_delay: float = 1.0,
     rotate_sleep_seconds: float = 1.0,
@@ -184,6 +189,7 @@ def handle_api_error_retry(
     set_model_penalty_seconds: float = 0.0,
     high_demand_penalty_seconds: float = 0.0,
     set_model_penalty_fn: Optional[Callable[[str, float], None]] = None,
+    set_model_high_demand_penalty_fn: Optional[Callable[[str, float], None]] = None,
     all_models_in_penalty_fn: Optional[Callable[[], bool]] = None,
     all_models_penalty_log: str = "",
     rotate_api_key_fn: Optional[Callable[[], bool]] = None,
@@ -195,32 +201,43 @@ def handle_api_error_retry(
     if reason == "rpd_limit":
         return apply_key_penalty_and_rotate(
             self,
+            key_index=key_index,
             recovery_window=seconds_until_next_pacific_midnight(),
             reason_text="RPD limit (sehat kembali setelah reset harian Pacific Time)",
             reason_code=reason,
             force_unhealthy=True,
             rotate_sleep_seconds=rotate_sleep_seconds,
+            rotate_api_key_fn=rotate_fn,
         )
 
     if reason == "tpm_rpm_limit":
         return apply_key_penalty_and_rotate(
             self,
+            key_index=key_index,
             recovery_window=60,
             reason_text="TPM/RPM limit (cooldown 60 detik)",
             reason_code=reason,
             force_unhealthy=True,
             rotate_sleep_seconds=rotate_sleep_seconds,
+            rotate_api_key_fn=rotate_fn,
         )
 
     if reason == "quota_exhausted":
-        if model_name and callable(set_model_penalty_fn) and float(set_model_penalty_seconds) > 0:
-            set_model_penalty_fn(model_name, float(set_model_penalty_seconds))
-        if callable(all_models_in_penalty_fn) and all_models_in_penalty_fn():
-            if all_models_penalty_log:
-                logger.warning("%s", all_models_penalty_log)
-            if callable(rotate_fn) and rotate_fn():
-                time.sleep(max(0.0, min(1.0, float(base_retry_delay))))
-                return True
+        recovery_window = seconds_until_next_pacific_midnight()
+        rotated = apply_key_penalty_and_rotate(
+            self,
+            key_index=key_index,
+            recovery_window=recovery_window,
+            reason_text="Quota exhausted / RESOURCE_EXHAUSTED (reset saat midnight Pacific Time)",
+            reason_code=reason,
+            force_unhealthy=True,
+            rotate_sleep_seconds=rotate_sleep_seconds,
+            rotate_api_key_fn=rotate_fn,
+        )
+        if rotated:
+            return True
+        if callable(all_models_in_penalty_fn) and all_models_in_penalty_fn() and all_models_penalty_log:
+            logger.warning("%s", all_models_penalty_log)
         sleep_for = quota_retry_delay
         if sleep_for is None:
             sleep_for = min(1.0, float(base_retry_delay))
@@ -231,15 +248,19 @@ def handle_api_error_retry(
         penalty = 86400 if reason == "auth_key" else 60
         return apply_key_penalty_and_rotate(
             self,
+            key_index=key_index,
             recovery_window=penalty,
             reason_text=("Auth/API key tidak valid" if reason == "auth_key" else "Rate limit API key"),
             reason_code=reason,
             force_unhealthy=(reason == "auth_key"),
             rotate_sleep_seconds=rotate_sleep_seconds,
+            rotate_api_key_fn=rotate_fn,
         )
 
     if reason == "high_demand":
-        if model_name and callable(set_model_penalty_fn) and float(high_demand_penalty_seconds) > 0:
+        if model_name and callable(set_model_high_demand_penalty_fn) and float(high_demand_penalty_seconds) > 0:
+            set_model_high_demand_penalty_fn(model_name, float(high_demand_penalty_seconds))
+        elif model_name and callable(set_model_penalty_fn) and float(high_demand_penalty_seconds) > 0:
             set_model_penalty_fn(model_name, float(high_demand_penalty_seconds))
         if callable(high_demand_backoff_fn):
             sleep_for = high_demand_backoff_fn(attempt)

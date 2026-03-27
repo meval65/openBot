@@ -38,11 +38,29 @@ def get_client_snapshot(self) -> tuple[int, genai.Client]:
 
 def select_chat_model_for_attempt(self) -> str:
     primary = str(getattr(self, "primary_chat_model", "") or "").strip()
+    models = ordered_chat_models(self)
     if not primary:
-        models = ordered_chat_models(self)
         primary = str(models[0] if models else (getattr(self, "chat_model_name", "") or "")).strip()
-    self.chat_model_name = primary
-    return primary
+    chosen = primary
+    high_demand_remaining = 0.0
+    try:
+        high_demand_remaining = float(self._get_model_high_demand_remaining(primary) or 0.0)
+    except Exception:
+        high_demand_remaining = 0.0
+    if high_demand_remaining > 0.0:
+        for candidate in models:
+            clean = str(candidate or "").strip()
+            if not clean or clean == primary:
+                continue
+            try:
+                if float(self._get_model_high_demand_remaining(clean) or 0.0) <= 0.0:
+                    chosen = clean
+                    break
+            except Exception:
+                chosen = clean
+                break
+    self.chat_model_name = chosen
+    return chosen
 
 
 def _extract_function_calls(response) -> List[types.FunctionCall]:
@@ -149,6 +167,64 @@ def _is_empty_response_error(error_msg: str) -> bool:
     return ("empty response received" in msg) or (msg == "empty_response")
 
 
+def _get_pending_outbound_snapshot(self) -> dict:
+    media_count = 0
+    file_count = 0
+    message_count = 0
+    try:
+        with self._outbound_media_lock:
+            media_count = len(getattr(self, "_pending_outbound_media", []) or [])
+    except Exception:
+        media_count = 0
+    try:
+        with self._outbound_file_lock:
+            file_count = len(getattr(self, "_pending_outbound_files", []) or [])
+    except Exception:
+        file_count = 0
+    try:
+        with self._outbound_message_lock:
+            message_count = len(getattr(self, "_pending_outbound_messages", []) or [])
+    except Exception:
+        message_count = 0
+    return {
+        "media_count": int(media_count),
+        "file_count": int(file_count),
+        "message_count": int(message_count),
+    }
+
+
+def _build_tool_failure_fallback_system(
+    system_prompt: str,
+    reason_text: str,
+    called_tool_names: Optional[List[str]] = None,
+    outbound_snapshot: Optional[dict] = None,
+) -> str:
+    tool_names = [str(name or "").strip() for name in (called_tool_names or []) if str(name or "").strip()]
+    outbound = outbound_snapshot if isinstance(outbound_snapshot, dict) else {}
+    artifact_notes: List[str] = []
+    if int(outbound.get("media_count", 0) or 0) > 0:
+        artifact_notes.append(f"{int(outbound.get('media_count', 0) or 0)} media sudah berhasil disiapkan")
+    if int(outbound.get("file_count", 0) or 0) > 0:
+        artifact_notes.append(f"{int(outbound.get('file_count', 0) or 0) or 0} file sudah berhasil disiapkan")
+    if int(outbound.get("message_count", 0) or 0) > 0:
+        artifact_notes.append("ada status proses yang sudah terkirim")
+    artifact_text = "; ".join(artifact_notes) if artifact_notes else "tidak ada artefak tool yang berhasil disiapkan"
+    tools_text = ", ".join(tool_names) if tool_names else "tidak diketahui"
+    return (
+        f"{system_prompt}\n\n"
+        "[SYSTEM - TOOL FAILURE FALLBACK]\n"
+        "Percobaan memakai tool atau data live gagal setelah beberapa percobaan.\n"
+        "Dalam jawaban finalmu, jika user meminta data live, verifikasi, atau aksi tool, kamu HARUS bilang dengan jelas bahwa pengecekan atau eksekusi barusan gagal, tidak tersedia, atau tidak berhasil diselesaikan.\n"
+        "Jangan mengklaim hasil tool, data real-time, atau aksi file/sistem seolah-olah sudah berhasil kalau memang belum berhasil.\n"
+        "Kamu tetap boleh membantu dengan pengetahuan umum, penalaran biasa, saran, atau langkah manual selama kamu jujur soal keterbatasan ini.\n"
+        "Jika ada artefak yang memang sudah berhasil disiapkan untuk user, kamu boleh menyebut itu secara singkat tanpa berpura-pura semua tool berhasil.\n"
+        f"Tool yang sempat terlibat: {tools_text}.\n"
+        f"Status artefak: {artifact_text}.\n"
+        f"Alasan internal singkat: {reason_text}.\n"
+        "[END SYSTEM]"
+    )
+
+
 def _consume_staged_tool_image_parts(self) -> List[types.Part]:
     staged = getattr(self._tool_call_local, "web_image_inputs", None)
     self._tool_call_local.web_image_inputs = []
@@ -215,7 +291,8 @@ def rotate_api_key(self) -> bool:
         start_index, total_keys
     )
     if new_key_index is None:
-        new_key_index = start_index
+        logger.warning("Tidak ada API key chat yang sehat untuk dipakai saat ini.")
+        return False
 
     try:
         with self._client_state_lock:
@@ -245,6 +322,27 @@ def set_model_penalty(self, model_name: str, seconds: float):
         self._model_penalty_until[model_name] = new_until
     logger.warning(
         "Model %s masuk masa tunggu selama %.1f detik",
+        model_name,
+        max(0.0, new_until - now),
+    )
+
+
+def get_model_high_demand_remaining(self, model_name: str) -> float:
+    with self._model_penalty_lock:
+        until = self._model_high_demand_until.get(model_name, 0.0)
+    return max(0.0, until - time.time())
+
+
+def set_model_high_demand_penalty(self, model_name: str, seconds: float):
+    if not model_name or seconds <= 0:
+        return
+    now = time.time()
+    with self._model_penalty_lock:
+        old_until = self._model_high_demand_until.get(model_name, 0.0)
+        new_until = max(old_until, now + seconds)
+        self._model_high_demand_until[model_name] = new_until
+    logger.warning(
+        "Model %s masuk cooldown high-demand selama %.1f detik",
         model_name,
         max(0.0, new_until - now),
     )
@@ -313,6 +411,7 @@ def call_gemini(self, model: str, contents: list, config=None):
             if handle_api_error_retry(
                 self,
                 reason_code=reason_code,
+                key_index=request_key_index,
                 attempt=attempt,
                 base_retry_delay=float(CHAT_BASE_RETRY_DELAY),
                 rotate_sleep_seconds=min(1.0, float(CHAT_BASE_RETRY_DELAY)),
@@ -321,6 +420,7 @@ def call_gemini(self, model: str, contents: list, config=None):
                 set_model_penalty_seconds=max(float(HIGH_DEMAND_MODEL_COOLDOWN), 60.0),
                 high_demand_penalty_seconds=float(HIGH_DEMAND_MODEL_COOLDOWN),
                 set_model_penalty_fn=self._set_model_penalty,
+                set_model_high_demand_penalty_fn=self._set_model_high_demand_penalty,
                 all_models_in_penalty_fn=lambda: all_chat_models_in_penalty(self),
                 all_models_penalty_log="Semua model chat sedang cooldown karena quota. Coba ganti API key.",
                 rotate_api_key_fn=self._rotate_api_key,
@@ -343,14 +443,14 @@ def generate_with_tools(
 
     def make_honest_fallback_system() -> str:
         reason_text = fallback_reason or "tool yang dibutuhkan sedang gagal diakses"
-        return (
-            f"{system_prompt}\n\n"
-            "[SYSTEM - TOOL FAILURE FALLBACK - INTERNAL, JANGAN UNGKAPKAN KE USER]\n"
-            "Percobaan memakai tools/data live gagal. Kamu BOLEH tetap membantu dengan pengetahuan umummu, "
-            "tetapi WAJIB jujur bahwa pengecekan live barusan gagal atau tidak tersedia. "
-            "Jangan mengklaim data real-time seolah sudah berhasil diverifikasi. "
-            f"Alasan singkat internal: {reason_text}.\n"
-            "[END SYSTEM]"
+        called_tools = getattr(self._tool_call_local, "called_tools", None)
+        called_list = sorted(list(called_tools)) if isinstance(called_tools, set) else []
+        outbound_snapshot = _get_pending_outbound_snapshot(self)
+        return _build_tool_failure_fallback_system(
+            system_prompt=system_prompt,
+            reason_text=reason_text,
+            called_tool_names=called_list,
+            outbound_snapshot=outbound_snapshot,
         )
 
     def make_config(tools_enabled: bool, system_instruction_text: str):
@@ -565,6 +665,7 @@ def generate_with_tools(
                 if handle_api_error_retry(
                     self,
                     reason_code=reason_code,
+                    key_index=request_key_index,
                     attempt=attempt,
                     base_retry_delay=float(CHAT_BASE_RETRY_DELAY),
                     rotate_sleep_seconds=min(1.0, float(CHAT_BASE_RETRY_DELAY)),
@@ -573,6 +674,7 @@ def generate_with_tools(
                     set_model_penalty_seconds=max(float(HIGH_DEMAND_MODEL_COOLDOWN), 60.0),
                     high_demand_penalty_seconds=float(HIGH_DEMAND_MODEL_COOLDOWN),
                     set_model_penalty_fn=self._set_model_penalty,
+                    set_model_high_demand_penalty_fn=self._set_model_high_demand_penalty,
                     all_models_in_penalty_fn=lambda: all_chat_models_in_penalty(self),
                     all_models_penalty_log="Semua model chat sedang cooldown karena quota. Coba ganti API key.",
                     rotate_api_key_fn=self._rotate_api_key,
@@ -656,11 +758,9 @@ def generate_no_tools(
                 )
                 time.sleep(min(0.8, float(CHAT_BASE_RETRY_DELAY) + 0.2))
                 continue
-            self._set_model_penalty(
-                active_model,
-                max(float(HIGH_DEMAND_MODEL_COOLDOWN), 45.0),
+            logger.warning(
+                "Respons kosong pada mode tanpa tools. Retry lokal tanpa rotate API atau cooldown model."
             )
-            self._rotate_api_key()
             time.sleep(min(0.8, float(CHAT_BASE_RETRY_DELAY) + 0.2))
             continue
         except Exception as e:
@@ -670,6 +770,7 @@ def generate_no_tools(
             if handle_api_error_retry(
                 self,
                 reason_code=reason_code,
+                key_index=request_key_index,
                 attempt=attempt,
                 base_retry_delay=float(CHAT_BASE_RETRY_DELAY),
                 rotate_sleep_seconds=min(1.0, float(CHAT_BASE_RETRY_DELAY)),
@@ -678,6 +779,7 @@ def generate_no_tools(
                 set_model_penalty_seconds=max(float(HIGH_DEMAND_MODEL_COOLDOWN), 60.0),
                 high_demand_penalty_seconds=float(HIGH_DEMAND_MODEL_COOLDOWN),
                 set_model_penalty_fn=self._set_model_penalty,
+                set_model_high_demand_penalty_fn=self._set_model_high_demand_penalty,
                 all_models_in_penalty_fn=lambda: all_chat_models_in_penalty(self),
                 all_models_penalty_log="Semua model chat sedang cooldown karena quota. Coba ganti API key.",
                 rotate_api_key_fn=self._rotate_api_key,

@@ -147,6 +147,18 @@ def _parse_schedule_datetime(raw_value: str) -> Optional[datetime.datetime]:
 
 
 def build_python_tools(self) -> list:
+    def _bump_profile_score(amount: float, reason: str):
+        try:
+            current = float(self.session_manager.get_metadata("user_profile_update_score", 0.0) or 0.0)
+        except Exception:
+            current = 0.0
+        self.session_manager.set_metadata(
+            "user_profile_update_score",
+            round(max(0.0, current + float(amount or 0.0)), 2),
+            persist=True,
+        )
+        logger.info("[USER-PROFILE] score bump via tool | +%.2f | reason=%s", float(amount or 0.0), reason)
+
     def _resolve_outbound_file_item(raw_path: str):
         raw = str(raw_path or "").strip()
         if not raw:
@@ -216,11 +228,13 @@ def build_python_tools(self) -> list:
         include_image: bool = False,
     ) -> str:
         """
-        Web search tool.
-        Allowed topic: general | news | finance.
-        Allowed search_level: 1..4 (mapped automatically to search depth).
-        Allowed time_range: none | day | week | month | year.
-        include_image: include image results when available.
+        Cari informasi live dari web.
+        Pakai tool ini untuk berita, info terbaru, verifikasi fakta web, atau ketika user memang minta dicari di internet.
+        Jangan pakai untuk pengetahuan umum yang sudah bisa dijawab tanpa web.
+        topic: general | news | finance.
+        search_level: 1..4, makin tinggi makin dalam tapi biasanya lebih berat.
+        time_range: none | day | week | month | year.
+        include_image: True hanya jika gambar hasil pencarian memang membantu jawaban.
         """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
@@ -357,6 +371,11 @@ def build_python_tools(self) -> list:
         return text_result
 
     def create_schedule(datetime_iso: str, context: str, priority: int = 0) -> str:
+        """
+        Buat reminder baru.
+        Gunakan jika user meminta diingatkan pada waktu tertentu dan kamu sudah punya waktu yang jelas.
+        `context` harus singkat, jelas, dan menjelaskan isi reminder.
+        """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
             called_tools.add("create_schedule")
@@ -388,6 +407,11 @@ def build_python_tools(self) -> list:
             return f"Gagal membuat reminder: {e}"
 
     def save_memory(summary: str, m_type: str = "general", priority: float = 0.7) -> str:
+        """
+        Simpan memory jangka panjang yang penting.
+        Gunakan untuk preferensi, fakta personal, batasan, keputusan, atau hal relasional yang layak diingat nanti.
+        Jangan simpan detail sementara atau hal yang sepele.
+        """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
             called_tools.add("save_memory")
@@ -414,6 +438,7 @@ def build_python_tools(self) -> list:
                 embedding_namespace="memory",
             )
             if save_status == "created":
+                _bump_profile_score(3.0, "save_memory")
                 return f"Memori berhasil disimpan. type={mem_type}, priority={p:.2f}, summary={clean_summary}"
             if save_status == "duplicate":
                 return f"Memori tidak ditambahkan karena sudah ada yang sangat mirip. summary={clean_summary}"
@@ -425,6 +450,10 @@ def build_python_tools(self) -> list:
             return f"Gagal menyimpan memori: {e}"
 
     def list_memories(limit: int = 10, query: str = "", m_type: str = "") -> str:
+        """
+        Lihat atau cari memory yang sudah ada.
+        Gunakan sebelum update/forget atau saat kamu perlu memastikan memory tertentu memang sudah tersimpan.
+        """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
             called_tools.add("list_memories")
@@ -490,6 +519,10 @@ def build_python_tools(self) -> list:
             return f"Gagal membaca memori: {e}"
 
     def forget_memory(memory_id: str = "") -> str:
+        """
+        Arsipkan memory tertentu berdasarkan id.
+        Gunakan hanya kalau kamu sudah tahu `memory_id` yang benar, biasanya setelah `list_memories`.
+        """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
             called_tools.add("forget_memory")
@@ -501,6 +534,7 @@ def build_python_tools(self) -> list:
                 return "Gagal menghapus memori: `memory_id` harus berupa angka positif."
             ok = self.memory_manager.archive_memory_by_id(mem_id)
             if ok:
+                _bump_profile_score(3.0, "forget_memory")
                 return f"Memori id={mem_id} berhasil diarsipkan."
             return f"Gagal mengarsipkan memori id={mem_id} (tidak ditemukan atau sudah nonaktif)."
         except Exception as e:
@@ -508,6 +542,10 @@ def build_python_tools(self) -> list:
             return f"Gagal menghapus memori: {e}"
 
     def update_memory(memory_id: str, summary: str, priority: float = 0.7, m_type: str = "general") -> str:
+        """
+        Perbarui memory yang sudah ada.
+        Gunakan untuk mengoreksi atau menyempurnakan memory lama, bukan untuk membuat memory baru.
+        """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
             called_tools.add("update_memory")
@@ -537,6 +575,7 @@ def build_python_tools(self) -> list:
                 new_embedding=emb_list,
             )
             if ok:
+                _bump_profile_score(3.0, "update_memory")
                 return f"Memori berhasil diupdate. id={mem_id}, type={normalized_type}, p={p:.2f}, summary={clean_summary}"
             return f"Gagal update memori id={mem_id} (tidak ditemukan atau sudah nonaktif)."
         except Exception as e:
@@ -544,6 +583,10 @@ def build_python_tools(self) -> list:
             return f"Gagal update memori: {e}"
 
     def list_schedules(limit: int = 10, priority: int = -1, datetime_iso: str = "") -> str:
+        """
+        Tampilkan reminder yang masih pending.
+        Gunakan untuk mengecek jadwal, mencari id reminder, atau merangkum reminder user.
+        """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
             called_tools.add("list_schedules")
@@ -582,6 +625,10 @@ def build_python_tools(self) -> list:
             return f"Gagal membaca daftar reminder: {e}"
 
     def cancel_schedule(schedule_id: int = 0) -> str:
+        """
+        Batalkan reminder berdasarkan id.
+        Gunakan hanya jika user memang ingin membatalkan dan kamu sudah punya `schedule_id` yang tepat.
+        """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
             called_tools.add("cancel_schedule")
@@ -604,8 +651,9 @@ def build_python_tools(self) -> list:
 
     def ai_personal_computer(command: str, timeout_sec: int = TERMINAL_TIMEOUT_DEFAULT, cwd: str = "") -> str:
         """
-        Komputer pribadi AI untuk menjalankan command terminal pada sandbox bot ini.
-        Dipakai untuk operasional/debug langsung dari AI.
+        Jalankan command terminal di komputer pribadi AI.
+        Gunakan untuk membaca file, menulis file, menjalankan script, mengatur workspace, atau tugas terminal lain yang benar-benar membantu kebutuhan user.
+        Pilih command yang aman, rapi, dan tidak destruktif jika ada alternatif yang lebih aman.
         """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
@@ -655,7 +703,8 @@ def build_python_tools(self) -> list:
 
     def send_files_from_ai_personal_computer(file_paths: List[str]) -> str:
         """
-        Stage beberapa file dari komputer pribadi AI untuk dikirim ke user Telegram.
+        Siapkan beberapa file dari komputer pribadi AI untuk dikirim ke user Telegram.
+        Gunakan setelah file benar-benar selesai dibuat atau memang ingin dibagikan ke user.
         """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
@@ -713,8 +762,8 @@ def build_python_tools(self) -> list:
 
     def inspect_images_from_ai_personal_computer(file_paths: List[str]) -> str:
         """
-        Ambil beberapa file gambar dari komputer pribadi AI dan stage sebagai input visual
-        untuk loop model berikutnya agar AI bisa melihat hasil gambar buatannya sendiri.
+        Ambil beberapa gambar dari komputer pribadi AI lalu masukkan lagi sebagai input visual.
+        Gunakan jika kamu perlu melihat hasil gambar yang sudah ada di komputermu sendiri agar bisa menganalisis atau membandingkannya pada loop berikutnya.
         """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
@@ -782,8 +831,8 @@ def build_python_tools(self) -> list:
 
     def announce_action(message: str) -> str:
         """
-        Kirim bubble chat status terpisah ke user sebelum tool/aksi berikutnya dijalankan.
-        Gunakan hanya untuk aksi yang butuh waktu terasa.
+        Kirim status singkat terpisah ke user sebelum aksi yang terasa lama.
+        Gunakan untuk memberi tahu progres secara natural, bukan untuk setiap langkah kecil.
         """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
