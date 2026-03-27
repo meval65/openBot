@@ -44,6 +44,9 @@ from src.utils.error_types import LLMGenerationError
 
 logger = logging.getLogger(__name__)
 
+_DOCKER_HEALTH_FAIL_THRESHOLD = 3
+_DOCKER_HEALTH_RESUME_THRESHOLD = 2
+
 _PERSONAL_COMPUTER_APPENDIX = (
     "Kamu memiliki komputer pribadi dengan akses terminal penuh.\n"
     "Gunakan secara proaktif untuk mencatat, menyimpan, dan\n"
@@ -181,6 +184,8 @@ class ChatHandler:
         self._runtime_pause_lock = threading.Lock()
         self._runtime_paused = False
         self._runtime_pause_reason = ""
+        self._terminal_health_fail_streak = 0
+        self._terminal_health_success_streak = 0
         self._terminal_monitor_started = False
         self.proactive_learning = ProactiveLearning()
         self._user_profile_refresh_lock = threading.Lock()
@@ -774,9 +779,21 @@ class ChatHandler:
             while True:
                 try:
                     ok, reason = self.terminal_service.get_sandbox_status()
-                    self._set_runtime_pause(not ok, str(reason or ""))
+                    if ok:
+                        self._terminal_health_fail_streak = 0
+                        self._terminal_health_success_streak += 1
+                        if self._terminal_health_success_streak >= _DOCKER_HEALTH_RESUME_THRESHOLD:
+                            self._set_runtime_pause(False, "")
+                    else:
+                        self._terminal_health_success_streak = 0
+                        self._terminal_health_fail_streak += 1
+                        if self._terminal_health_fail_streak >= _DOCKER_HEALTH_FAIL_THRESHOLD:
+                            self._set_runtime_pause(True, str(reason or ""))
                 except Exception as e:
-                    self._set_runtime_pause(True, str(e))
+                    self._terminal_health_success_streak = 0
+                    self._terminal_health_fail_streak += 1
+                    if self._terminal_health_fail_streak >= _DOCKER_HEALTH_FAIL_THRESHOLD:
+                        self._set_runtime_pause(True, str(e))
                 time.sleep(5.0)
 
         threading.Thread(target=_run, name="terminal-health-monitor", daemon=True).start()
