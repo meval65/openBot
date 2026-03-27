@@ -370,284 +370,268 @@ def build_python_tools(self) -> list:
                 self._web_search_cache[cache_key] = (now_ts, text_result)
         return text_result
 
-    def create_schedule(datetime_iso: str, context: str, priority: int = 0) -> str:
+    def schedule_manager(
+        action: str,
+        datetime_iso: str = "",
+        context: str = "",
+        priority: Optional[int] = None,
+        limit: int = 10,
+        schedule_id: int = 0,
+    ) -> str:
         """
-        Buat reminder baru.
-        Gunakan jika user meminta diingatkan pada waktu tertentu dan kamu sudah punya waktu yang jelas.
-        `context` harus singkat, jelas, dan menjelaskan isi reminder.
-        """
-        called_tools = getattr(self._tool_call_local, "called_tools", None)
-        if isinstance(called_tools, set):
-            called_tools.add("create_schedule")
-        try:
-            trigger_time = _parse_schedule_datetime(datetime_iso)
-            clean_context = " ".join(str(context or "").split()).strip()
-            if trigger_time is None:
-                return "Gagal membuat reminder: format waktu tidak valid. Gunakan format seperti 2026-03-22T08:00:00."
-            if not clean_context:
-                return "Gagal membuat reminder: konteks reminder kosong."
-            schedule_id = self.scheduler_service.add_schedule(
-                trigger_time=trigger_time,
-                context=clean_context,
-                priority=int(max(0, min(10, int(priority or 0)))),
-            )
-            if not schedule_id:
-                return "Reminder tidak dibuat. Mungkin duplikat, waktunya sudah lewat, atau input tidak valid."
-            stored = self.scheduler_service.get_schedule_by_id(int(schedule_id))
-            stored_context = clean_context
-            pretty_time = trigger_time.strftime("%Y-%m-%d %H:%M")
-            if isinstance(stored, dict):
-                stored_context = " ".join(str(stored.get("context") or clean_context).split()).strip() or clean_context
-                stored_dt = _parse_schedule_datetime(str(stored.get("scheduled_at") or ""))
-                if stored_dt is not None:
-                    pretty_time = stored_dt.strftime("%Y-%m-%d %H:%M")
-            return f"Reminder berhasil dibuat. id={schedule_id}, waktu_local={pretty_time}, konteks={stored_context}"
-        except Exception as e:
-            logger.error(f"[TOOL create_schedule] Failed: {e}")
-            return f"Gagal membuat reminder: {e}"
-
-    def save_memory(summary: str, m_type: str = "general", priority: float = 0.7) -> str:
-        """
-        Simpan memory jangka panjang yang penting.
-        Gunakan untuk preferensi, fakta personal, batasan, keputusan, atau hal relasional yang layak diingat nanti.
-        Jangan simpan detail sementara atau hal yang sepele.
+        Kelola reminder dalam satu tool.
+        action:
+        - create: wajib isi `datetime_iso` dan `context`; `priority` opsional.
+        - list: pakai `limit`, opsional filter `priority` exact dan `datetime_iso`.
+        - cancel: wajib isi `schedule_id`.
+        Untuk tiap action, abaikan argumen lain yang tidak relevan.
         """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
-            called_tools.add("save_memory")
+            called_tools.add("schedule_manager")
+        mode = str(action or "").strip().lower()
         try:
-            clean_summary = " ".join(str(summary or "").split()).strip()
-            if len(clean_summary) < 6:
-                return "Gagal menyimpan memori: ringkasan terlalu pendek."
-
-            mem_type = _normalize_memory_type(m_type)
-            p = max(0.0, min(1.0, float(priority)))
-
-            emb = self.analyzer.get_embedding(clean_summary)
-            if emb is None:
-                return "Gagal menyimpan memori: embedding tidak tersedia."
-            emb_list = emb.tolist() if hasattr(emb, "tolist") else emb
-            if isinstance(emb_list, (list, tuple)) and len(emb_list) == 0:
-                return "Gagal menyimpan memori: embedding kosong."
-
-            save_status = self.memory_manager.add_memory(
-                summary=clean_summary,
-                m_type=mem_type,
-                priority=p,
-                embedding=emb_list,
-                embedding_namespace="memory",
-            )
-            if save_status == "created":
-                _bump_profile_score(3.0, "save_memory")
-                return f"Memori berhasil disimpan. type={mem_type}, priority={p:.2f}, summary={clean_summary}"
-            if save_status == "duplicate":
-                return f"Memori tidak ditambahkan karena sudah ada yang sangat mirip. summary={clean_summary}"
-            if save_status == "invalid":
-                return "Gagal menyimpan memori: ringkasan tidak valid."
-            return f"Gagal menyimpan memori: status={save_status or 'unknown'}"
-        except Exception as e:
-            logger.error(f"[TOOL save_memory] Failed: {e}")
-            return f"Gagal menyimpan memori: {e}"
-
-    def list_memories(limit: int = 10, query: str = "", m_type: str = "") -> str:
-        """
-        Lihat atau cari memory yang sudah ada.
-        Gunakan sebelum update/forget atau saat kamu perlu memastikan memory tertentu memang sudah tersimpan.
-        """
-        called_tools = getattr(self._tool_call_local, "called_tools", None)
-        if isinstance(called_tools, set):
-            called_tools.add("list_memories")
-        try:
-            max_items = max(1, min(20, int(limit or 10)))
-            q = " ".join(str(query or "").split()).strip()
-            mem_type_filter = str(m_type or "").strip()
-            normalized_type = _normalize_memory_type(mem_type_filter) if mem_type_filter else ""
-            lines = []
-
-            if q:
-                emb = self.analyzer.get_embedding(q)
-                if emb is None:
-                    return "Gagal membaca memori: embedding query tidak tersedia."
-                emb_list = emb.tolist() if hasattr(emb, "tolist") else emb
-                rows = self.memory_manager.get_relevant_memories(
-                    query_embedding=emb_list,
-                    memory_type=normalized_type or None,
-                    max_results=max_items,
-                    embedding_namespaces=["memory"],
+            if mode == "create":
+                trigger_time = _parse_schedule_datetime(datetime_iso)
+                clean_context = " ".join(str(context or "").split()).strip()
+                normalized_priority = 0 if priority is None else int(max(0, min(10, int(priority or 0))))
+                if trigger_time is None:
+                    return "Gagal membuat reminder: format waktu tidak valid. Gunakan format seperti 2026-03-22T08:00:00."
+                if not clean_context:
+                    return "Gagal membuat reminder: konteks reminder kosong."
+                created_id = self.scheduler_service.add_schedule(
+                    trigger_time=trigger_time,
+                    context=clean_context,
+                    priority=normalized_priority,
                 )
-                if not rows:
-                    return "Tidak ada memori relevan."
-                for item in rows[:max_items]:
-                    lines.append(
-                        f"id={item.get('id')} | type={item.get('type')} | p={float(item.get('priority', 0.0)):.2f} | {item.get('summary')}"
-                    )
-                return "Daftar memori relevan berikut sudah menyertakan `id` untuk dipakai pada update/forget:\n" + "\n".join(lines)
+                if not created_id:
+                    return "Reminder tidak dibuat. Mungkin duplikat, waktunya sudah lewat, atau input tidak valid."
+                stored = self.scheduler_service.get_schedule_by_id(int(created_id))
+                stored_context = clean_context
+                pretty_time = trigger_time.strftime("%Y-%m-%d %H:%M")
+                if isinstance(stored, dict):
+                    stored_context = " ".join(str(stored.get("context") or clean_context).split()).strip() or clean_context
+                    stored_dt = _parse_schedule_datetime(str(stored.get("scheduled_at") or ""))
+                    if stored_dt is not None:
+                        pretty_time = stored_dt.strftime("%Y-%m-%d %H:%M")
+                return f"Reminder berhasil dibuat. id={created_id}, waktu_local={pretty_time}, konteks={stored_context}"
 
-            cursor = self.memory_manager.db.get_cursor()
-            if normalized_type:
-                cursor.execute(
-                    """
-                    SELECT id, summary, memory_type, priority
-                    FROM memories
-                    WHERE status='active' AND embedding_namespace='memory' AND memory_type=?
-                    ORDER BY priority DESC, created_at DESC
-                    LIMIT ?
-                    """,
-                    (normalized_type, max_items),
+            if mode == "list":
+                max_items = max(1, min(20, int(limit or 10)))
+                target_priority = int(priority) if priority is not None else None
+                start_dt = _parse_schedule_datetime(datetime_iso) if str(datetime_iso or "").strip() else None
+                if str(datetime_iso or "").strip() and start_dt is None:
+                    return "Gagal membaca daftar reminder: `datetime_iso` tidak valid."
+                pending = self.scheduler_service.get_pending_schedules(
+                    lookahead_minutes=60 * 24 * 365,
+                    include_overdue=True,
                 )
-            else:
-                cursor.execute(
-                    """
-                    SELECT id, summary, memory_type, priority
-                    FROM memories
-                    WHERE status='active' AND embedding_namespace='memory'
-                    ORDER BY priority DESC, created_at DESC
-                    LIMIT ?
-                    """,
-                    (max_items,),
-                )
-            rows = cursor.fetchall()
-            if not rows:
-                return "Tidak ada memori aktif."
-            for idx, row in enumerate(rows, start=1):
-                lines.append(
-                    f"{idx}. id={row[0]} | type={row[2]} | p={float(row[3] or 0.0):.2f} | {row[1]}"
-                )
-            return "Daftar memori aktif berikut sudah menyertakan `id` untuk dipakai pada update/forget:\n" + "\n".join(lines)
-        except Exception as e:
-            logger.error(f"[TOOL list_memories] Failed: {e}")
-            return f"Gagal membaca memori: {e}"
-
-    def forget_memory(memory_id: str = "") -> str:
-        """
-        Arsipkan memory tertentu berdasarkan id.
-        Gunakan hanya kalau kamu sudah tahu `memory_id` yang benar, biasanya setelah `list_memories`.
-        """
-        called_tools = getattr(self._tool_call_local, "called_tools", None)
-        if isinstance(called_tools, set):
-            called_tools.add("forget_memory")
-        try:
-            mem_id = str(memory_id or "").strip()
-            if not mem_id:
-                return "Gagal menghapus memori: `memory_id` wajib diisi. Gunakan `list_memories` dulu untuk melihat id yang tersedia."
-            if not mem_id.isdigit() or int(mem_id) <= 0:
-                return "Gagal menghapus memori: `memory_id` harus berupa angka positif."
-            ok = self.memory_manager.archive_memory_by_id(mem_id)
-            if ok:
-                _bump_profile_score(3.0, "forget_memory")
-                return f"Memori id={mem_id} berhasil diarsipkan."
-            return f"Gagal mengarsipkan memori id={mem_id} (tidak ditemukan atau sudah nonaktif)."
-        except Exception as e:
-            logger.error(f"[TOOL forget_memory] Failed: {e}")
-            return f"Gagal menghapus memori: {e}"
-
-    def update_memory(memory_id: str, summary: str, priority: float = 0.7, m_type: str = "general") -> str:
-        """
-        Perbarui memory yang sudah ada.
-        Gunakan untuk mengoreksi atau menyempurnakan memory lama, bukan untuk membuat memory baru.
-        """
-        called_tools = getattr(self._tool_call_local, "called_tools", None)
-        if isinstance(called_tools, set):
-            called_tools.add("update_memory")
-        try:
-            mem_id = str(memory_id or "").strip()
-            clean_summary = " ".join(str(summary or "").split()).strip()
-            if not mem_id:
-                return "Gagal update memori: memory_id wajib diisi."
-            if not mem_id.isdigit() or int(mem_id) <= 0:
-                return "Gagal update memori: memory_id harus berupa angka positif."
-            if len(clean_summary) < 3:
-                return "Gagal update memori: summary terlalu pendek."
-
-            p = max(0.0, min(1.0, float(priority)))
-            normalized_type = _normalize_memory_type(m_type)
-            emb = self.analyzer.get_embedding(clean_summary)
-            if emb is None:
-                return "Gagal update memori: embedding tidak tersedia."
-            emb_list = emb.tolist() if hasattr(emb, "tolist") else emb
-            if isinstance(emb_list, (list, tuple)) and len(emb_list) == 0:
-                return "Gagal update memori: embedding kosong."
-            ok = self.memory_manager.update_memory(
-                memory_id=mem_id,
-                new_summary=clean_summary,
-                new_priority=p,
-                new_m_type=normalized_type,
-                new_embedding=emb_list,
-            )
-            if ok:
-                _bump_profile_score(3.0, "update_memory")
-                return f"Memori berhasil diupdate. id={mem_id}, type={normalized_type}, p={p:.2f}, summary={clean_summary}"
-            return f"Gagal update memori id={mem_id} (tidak ditemukan atau sudah nonaktif)."
-        except Exception as e:
-            logger.error(f"[TOOL update_memory] Failed: {e}")
-            return f"Gagal update memori: {e}"
-
-    def list_schedules(limit: int = 10, priority: int = -1, datetime_iso: str = "") -> str:
-        """
-        Tampilkan reminder yang masih pending.
-        Gunakan untuk mengecek jadwal, mencari id reminder, atau merangkum reminder user.
-        """
-        called_tools = getattr(self._tool_call_local, "called_tools", None)
-        if isinstance(called_tools, set):
-            called_tools.add("list_schedules")
-        try:
-            max_items = max(1, min(20, int(limit or 10)))
-            min_priority = int(priority) if priority is not None else -1
-            if min_priority < -1:
-                min_priority = -1
-            start_dt = _parse_schedule_datetime(datetime_iso) if str(datetime_iso or "").strip() else None
-            if str(datetime_iso or "").strip() and start_dt is None:
-                return "Gagal membaca daftar reminder: `datetime_iso` tidak valid."
-            pending = self.scheduler_service.get_pending_schedules(
-                lookahead_minutes=60 * 24 * 365,
-                include_overdue=True,
-            )
-            filtered = []
-            for item in pending:
-                item_priority = int(item.get("priority") or 0)
-                if min_priority >= 0 and item_priority < min_priority:
-                    continue
-                if start_dt is not None:
-                    item_dt = _parse_schedule_datetime(str(item.get("scheduled_at") or ""))
-                    if item_dt is None or item_dt < start_dt:
+                filtered = []
+                for item in pending:
+                    item_priority = int(item.get("priority") or 0)
+                    if target_priority is not None and item_priority != target_priority:
                         continue
-                filtered.append(item)
-            if not filtered:
-                return "Tidak ada reminder pending."
-            lines = []
-            for item in filtered[:max_items]:
-                lines.append(
-                    f"id={item.get('id')} | waktu={item.get('scheduled_at')} | priority={item.get('priority')} | konteks={item.get('context')}"
-                )
-            return "\n".join(lines)
-        except Exception as e:
-            logger.error(f"[TOOL list_schedules] Failed: {e}")
-            return f"Gagal membaca daftar reminder: {e}"
+                    if start_dt is not None:
+                        item_dt = _parse_schedule_datetime(str(item.get("scheduled_at") or ""))
+                        if item_dt is None or item_dt < start_dt:
+                            continue
+                    filtered.append(item)
+                if not filtered:
+                    return "Tidak ada reminder pending."
+                lines = []
+                for item in filtered[:max_items]:
+                    lines.append(
+                        f"id={item.get('id')} | waktu={item.get('scheduled_at')} | priority={item.get('priority')} | konteks={item.get('context')}"
+                    )
+                return "\n".join(lines)
 
-    def cancel_schedule(schedule_id: int = 0) -> str:
+            if mode == "cancel":
+                try:
+                    sid = int(schedule_id or 0)
+                except Exception:
+                    sid = 0
+                if sid <= 0:
+                    return "Gagal membatalkan reminder: `schedule_id` wajib diisi. Gunakan `schedule_manager(action=\"list\")` dulu untuk melihat id yang tersedia."
+                success = self.scheduler_service.cancel_schedule(sid)
+                return (
+                    f"Reminder id={sid} berhasil dibatalkan."
+                    if success
+                    else f"Reminder id={sid} tidak ditemukan atau sudah tidak pending."
+                )
+
+            return "Gagal mengelola reminder: action harus salah satu dari create, list, atau cancel."
+        except Exception as e:
+            logger.error(f"[TOOL schedule_manager] Failed: {e}")
+            if mode == "create":
+                return f"Gagal membuat reminder: {e}"
+            if mode == "list":
+                return f"Gagal membaca daftar reminder: {e}"
+            if mode == "cancel":
+                return f"Gagal membatalkan reminder: {e}"
+            return f"Gagal mengelola reminder: {e}"
+
+    def memory_manager(
+        action: str,
+        summary: str = "",
+        m_type: str = "",
+        priority: float = 0.7,
+        limit: int = 10,
+        query: str = "",
+        memory_id: str = "",
+    ) -> str:
         """
-        Batalkan reminder berdasarkan id.
-        Gunakan hanya jika user memang ingin membatalkan dan kamu sudah punya `schedule_id` yang tepat.
+        Kelola memory jangka panjang dalam satu tool.
+        action:
+        - save: wajib isi `summary`; `m_type` dan `priority` opsional.
+        - list: pakai `limit`, opsional `query` untuk semantic search dan `m_type` untuk filter.
+        - update: wajib isi `memory_id` dan `summary`; `m_type` dan `priority` opsional.
+        - forget: wajib isi `memory_id`.
+        Untuk tiap action, abaikan argumen lain yang tidak relevan.
         """
         called_tools = getattr(self._tool_call_local, "called_tools", None)
         if isinstance(called_tools, set):
-            called_tools.add("cancel_schedule")
+            called_tools.add("memory_manager")
+        mode = str(action or "").strip().lower()
         try:
-            sid = int(schedule_id or 0)
-        except Exception:
-            sid = 0
-        try:
-            if sid <= 0:
-                return "Gagal membatalkan reminder: `schedule_id` wajib diisi. Gunakan `list_schedules` dulu untuk melihat id yang tersedia."
-            success = self.scheduler_service.cancel_schedule(sid)
-            return (
-                f"Reminder id={sid} berhasil dibatalkan."
-                if success
-                else f"Reminder id={sid} tidak ditemukan atau sudah tidak pending."
-            )
+            if mode == "save":
+                clean_summary = " ".join(str(summary or "").split()).strip()
+                if len(clean_summary) < 6:
+                    return "Gagal menyimpan memori: ringkasan terlalu pendek."
+                mem_type = _normalize_memory_type(m_type or MemoryType.GENERAL.value)
+                p = max(0.0, min(1.0, float(priority)))
+                emb = self.analyzer.get_embedding(clean_summary)
+                if emb is None:
+                    return "Gagal menyimpan memori: embedding tidak tersedia."
+                emb_list = emb.tolist() if hasattr(emb, "tolist") else emb
+                if isinstance(emb_list, (list, tuple)) and len(emb_list) == 0:
+                    return "Gagal menyimpan memori: embedding kosong."
+                save_status = self.memory_manager.add_memory(
+                    summary=clean_summary,
+                    m_type=mem_type,
+                    priority=p,
+                    embedding=emb_list,
+                    embedding_namespace="memory",
+                )
+                if save_status == "created":
+                    _bump_profile_score(3.0, "save_memory")
+                    return f"Memori berhasil disimpan. type={mem_type}, priority={p:.2f}, summary={clean_summary}"
+                if save_status == "duplicate":
+                    return f"Memori tidak ditambahkan karena sudah ada yang sangat mirip. summary={clean_summary}"
+                if save_status == "invalid":
+                    return "Gagal menyimpan memori: ringkasan tidak valid."
+                return f"Gagal menyimpan memori: status={save_status or 'unknown'}"
+
+            if mode == "list":
+                max_items = max(1, min(20, int(limit or 10)))
+                q = " ".join(str(query or "").split()).strip()
+                mem_type_filter = str(m_type or "").strip()
+                normalized_type = _normalize_memory_type(mem_type_filter) if mem_type_filter else ""
+                lines = []
+                use_semantic_query = bool(q) and (len(q) >= 8 or len(q.split()) >= 2)
+                if use_semantic_query:
+                    emb = self.analyzer.get_embedding(q)
+                    if emb is None:
+                        return "Gagal membaca memori: embedding query tidak tersedia."
+                    emb_list = emb.tolist() if hasattr(emb, "tolist") else emb
+                    rows = self.memory_manager.get_relevant_memories(
+                        query_embedding=emb_list,
+                        memory_type=normalized_type or None,
+                        max_results=max_items,
+                        embedding_namespaces=["memory"],
+                    )
+                    if not rows:
+                        return "Tidak ada memori relevan."
+                    for item in rows[:max_items]:
+                        lines.append(
+                            f"id={item.get('id')} | type={item.get('type')} | p={float(item.get('priority', 0.0)):.2f} | {item.get('summary')}"
+                        )
+                    return "Daftar memori relevan berikut sudah menyertakan `id` untuk dipakai pada update/forget:\n" + "\n".join(lines)
+
+                cursor = self.memory_manager.db.get_cursor()
+                if normalized_type:
+                    cursor.execute(
+                        """
+                        SELECT id, summary, memory_type, priority
+                        FROM memories
+                        WHERE status='active' AND embedding_namespace='memory' AND memory_type=?
+                        ORDER BY priority DESC, created_at DESC
+                        LIMIT ?
+                        """,
+                        (normalized_type, max_items),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id, summary, memory_type, priority
+                        FROM memories
+                        WHERE status='active' AND embedding_namespace='memory'
+                        ORDER BY priority DESC, created_at DESC
+                        LIMIT ?
+                        """,
+                        (max_items,),
+                    )
+                rows = cursor.fetchall()
+                if not rows:
+                    return "Tidak ada memori aktif."
+                for idx, row in enumerate(rows, start=1):
+                    lines.append(
+                        f"{idx}. id={row[0]} | type={row[2]} | p={float(row[3] or 0.0):.2f} | {row[1]}"
+                    )
+                return "Daftar memori aktif berikut sudah menyertakan `id` untuk dipakai pada update/forget:\n" + "\n".join(lines)
+
+            if mode == "forget":
+                mem_id = str(memory_id or "").strip()
+                if not mem_id:
+                    return "Gagal menghapus memori: `memory_id` wajib diisi. Gunakan `memory_manager(action=\"list\")` dulu untuk melihat id yang tersedia."
+                if not mem_id.isdigit() or int(mem_id) <= 0:
+                    return "Gagal menghapus memori: `memory_id` harus berupa angka positif."
+                ok = self.memory_manager.archive_memory_by_id(mem_id)
+                if ok:
+                    _bump_profile_score(3.0, "forget_memory")
+                    return f"Memori id={mem_id} berhasil diarsipkan."
+                return f"Gagal mengarsipkan memori id={mem_id} (tidak ditemukan atau sudah nonaktif)."
+
+            if mode == "update":
+                mem_id = str(memory_id or "").strip()
+                clean_summary = " ".join(str(summary or "").split()).strip()
+                if not mem_id:
+                    return "Gagal update memori: memory_id wajib diisi."
+                if not mem_id.isdigit() or int(mem_id) <= 0:
+                    return "Gagal update memori: memory_id harus berupa angka positif."
+                if len(clean_summary) < 3:
+                    return "Gagal update memori: summary terlalu pendek."
+                p = max(0.0, min(1.0, float(priority)))
+                normalized_type = _normalize_memory_type(m_type or MemoryType.GENERAL.value)
+                emb = self.analyzer.get_embedding(clean_summary)
+                if emb is None:
+                    return "Gagal update memori: embedding tidak tersedia."
+                emb_list = emb.tolist() if hasattr(emb, "tolist") else emb
+                if isinstance(emb_list, (list, tuple)) and len(emb_list) == 0:
+                    return "Gagal update memori: embedding kosong."
+                ok = self.memory_manager.update_memory(
+                    memory_id=mem_id,
+                    new_summary=clean_summary,
+                    new_priority=p,
+                    new_m_type=normalized_type,
+                    new_embedding=emb_list,
+                )
+                if ok:
+                    _bump_profile_score(3.0, "update_memory")
+                    return f"Memori berhasil diupdate. id={mem_id}, type={normalized_type}, p={p:.2f}, summary={clean_summary}"
+                return f"Gagal update memori id={mem_id} (tidak ditemukan atau sudah nonaktif)."
+
+            return "Gagal mengelola memori: action harus salah satu dari save, list, update, atau forget."
         except Exception as e:
-            logger.error(f"[TOOL cancel_schedule] Failed: {e}")
-            return f"Gagal membatalkan reminder: {e}"
+            logger.error(f"[TOOL memory_manager] Failed: {e}")
+            if mode == "save":
+                return f"Gagal menyimpan memori: {e}"
+            if mode == "list":
+                return f"Gagal membaca memori: {e}"
+            if mode == "forget":
+                return f"Gagal menghapus memori: {e}"
+            if mode == "update":
+                return f"Gagal update memori: {e}"
+            return f"Gagal mengelola memori: {e}"
 
     def ai_personal_computer(command: str, timeout_sec: int = TERMINAL_TIMEOUT_DEFAULT, cwd: str = "") -> str:
         """
@@ -851,7 +835,7 @@ def build_python_tools(self) -> list:
     if TOOLS_ENABLE_SEARCH_WEB:
         tools.append(search_web)
     if TOOLS_ENABLE_SCHEDULE:
-        tools.extend([create_schedule, list_schedules, cancel_schedule])
+        tools.append(schedule_manager)
     if TOOLS_ENABLE_ANNOUNCE_ACTION:
         tools.append(announce_action)
     if TOOLS_ENABLE_AI_PERSONAL_COMPUTER:
@@ -861,7 +845,7 @@ def build_python_tools(self) -> list:
     if TOOLS_ENABLE_AI_PC_SEND_FILES:
         tools.append(send_files_from_ai_personal_computer)
     if TOOLS_ENABLE_MEMORY:
-        tools.extend([save_memory, list_memories, forget_memory, update_memory])
+        tools.append(memory_manager)
 
     logger.info(
         "[TOOLS] Active=%s",

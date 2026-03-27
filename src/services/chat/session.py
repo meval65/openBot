@@ -32,7 +32,7 @@ _INTERNAL_HEADER_LINE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _INLINE_TOOL_CALL_RE = re.compile(
-    r"(?:`?\s*(?:ai_personal_computer|search_web|create_schedule|list_schedules|cancel_schedule|save_memory|list_memories|forget_memory|update_memory|inspect_images_from_ai_personal_computer|send_files_from_ai_personal_computer|announce_action)\s*`?)\s*\([^`]*\)\s*`?",
+    r"(?:`?\s*(?:ai_personal_computer|search_web|schedule_manager|memory_manager|inspect_images_from_ai_personal_computer|send_files_from_ai_personal_computer|announce_action)\s*`?)\s*\([^`]*\)\s*`?",
     re.IGNORECASE,
 )
 _PERSISTED_EXTRA_METADATA_KEYS = {

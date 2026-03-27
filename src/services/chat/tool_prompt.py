@@ -3,13 +3,8 @@ from typing import Iterable, List, Set
 
 _TOOL_HELP = {
     "search_web": "- `search_web(query, topic, search_level, time_range, include_image)`: pakai untuk mencari informasi live atau verifikasi web. Jangan pakai untuk pengetahuan umum yang sudah kamu tahu tanpa perlu web. `include_image=True` hanya jika gambar hasil pencarian benar-benar berguna.",
-    "create_schedule": "- `create_schedule(datetime_iso, context, priority)`: pakai untuk membuat reminder/jadwal baru dengan waktu yang jelas dan konteks singkat tentang apa yang harus diingatkan.",
-    "list_schedules": "- `list_schedules(limit, priority, datetime_iso)`: pakai untuk melihat reminder yang sudah ada sebelum membatalkan, mengecek, atau merangkum jadwal user.",
-    "cancel_schedule": "- `cancel_schedule(schedule_id)`: pakai hanya jika user minta membatalkan reminder tertentu dan kamu sudah punya `schedule_id` yang benar.",
-    "save_memory": "- `save_memory(summary, m_type, priority)`: pakai untuk menyimpan hal penting jangka panjang tentang user, hubungan, preferensi, fakta, atau keputusan. Jangan simpan hal sepele atau sementara.",
-    "list_memories": "- `list_memories(limit, query, m_type)`: pakai untuk mencari atau meninjau memory yang sudah ada, terutama sebelum update atau forget.",
-    "forget_memory": "- `forget_memory(memory_id)`: pakai hanya jika user minta menghapus memory tertentu dan kamu sudah tahu `memory_id`-nya.",
-    "update_memory": "- `update_memory(memory_id, summary, priority, m_type)`: pakai untuk memperbaiki memory yang sudah ada, bukan untuk membuat memory baru.",
+    "schedule_manager": "- `schedule_manager(action, datetime_iso, context, priority, limit, schedule_id)`: satu tool untuk reminder. `action=\"create\"` butuh `datetime_iso` dan `context` dengan `priority` opsional. `action=\"list\"` pakai `limit`, opsional filter `priority` exact (termasuk `0` jika memang ingin priority nol saja) dan `datetime_iso`. `action=\"cancel\"` butuh `schedule_id`. Jangan isi argumen lain kalau tidak relevan dengan action yang dipilih.",
+    "memory_manager": "- `memory_manager(action, summary, m_type, priority, limit, query, memory_id)`: satu tool untuk memory jangka panjang. `action=\"save\"` butuh `summary`, opsional `m_type` dan `priority`. `action=\"list\"` pakai `limit`, opsional `query` untuk semantic search dan `m_type` untuk filter, termasuk `m_type=\"general\"` jika memang hanya ingin memory general. `action=\"update\"` butuh `memory_id` dan `summary`, opsional `m_type` dan `priority`. `action=\"forget\"` butuh `memory_id`. Jangan isi argumen lain kalau tidak relevan dengan action yang dipilih.",
     "announce_action": "- `announce_action(message)`: pakai sebelum aksi yang terasa lama agar user tahu kamu sedang melakukan sesuatu. Jangan dipakai untuk setiap langkah kecil.",
     "ai_personal_computer": "- `ai_personal_computer(command, timeout_sec, cwd)`: pakai untuk bekerja langsung di komputer pribadi AI, misalnya membaca file, menjalankan script, mengorganisir workspace, atau melakukan tugas terminal lain yang memang membantu kebutuhan user.",
     "inspect_images_from_ai_personal_computer": "- `inspect_images_from_ai_personal_computer(file_paths)`: pakai jika kamu perlu melihat gambar yang sudah ada di komputer pribadimu sendiri agar bisa menganalisis hasil visual itu pada loop berikutnya.",
@@ -18,13 +13,8 @@ _TOOL_HELP = {
 
 _DEFAULT_TOOL_ORDER = [
     "search_web",
-    "create_schedule",
-    "list_schedules",
-    "cancel_schedule",
-    "save_memory",
-    "list_memories",
-    "forget_memory",
-    "update_memory",
+    "schedule_manager",
+    "memory_manager",
     "announce_action",
     "ai_personal_computer",
     "inspect_images_from_ai_personal_computer",
